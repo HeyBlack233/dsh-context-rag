@@ -23,8 +23,8 @@ Trajectory so you can see exactly what was retrieved and used.
 - **Workspace or all-scope** retrieval: search the current workspace by default,
   or across all workspaces.
 - **Pre-step durable context injection** shown in the Trajectory.
-- **Configure page** in the Plugins row of the DSH Web GUI, with **English and
-  Simplified Chinese** UI.
+- **Configure panel** on the plugin's page in the DSH Web GUI (above the
+  **Components** section), with **English and Simplified Chinese** UI.
 
 ## Install
 
@@ -38,7 +38,8 @@ or use the Plugins page in the DSH Web GUI and choose the local install flow.
 
 ## Quick configuration
 
-Open the plugin's Configure page (Plugins row) and set:
+Open the plugin's page in the Plugins view of the DSH Web GUI and use the
+configuration panel above the **Components** section:
 
 - `baseUrl` — your OpenAI-compatible embeddings endpoint, e.g.
   `https://api.openai.com/v1`.

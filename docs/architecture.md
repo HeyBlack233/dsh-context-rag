@@ -60,7 +60,7 @@ rather than disrupting the turn.
    changed).
 4. Start the single background indexing worker.
 5. Register the write-path and read-path hooks.
-6. Expose the config page (`client.js`) and the internal API (`lib/api.js`).
+6. Expose the config panel (`client.js`) and the internal API (`lib/api.js`).
 
 On shutdown, the worker is drained and the SQLite connection is closed.
 

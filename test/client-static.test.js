@@ -28,12 +28,16 @@ test('client.js: module loader wiring and plugin identity', () => {
   assert.ok(text.includes('inject: ["slots", "locale"]'), 'must inject ["slots", "locale"]');
 });
 
-test('client.js: registers the plugins.row.config slot with its key', () => {
+test('client.js: registers the plugins.bundle.config slot with its key', () => {
   const text = readClient();
-  assert.ok(text.includes('plugins.row.config'), 'must reference the plugins.row.config slot');
+  assert.ok(text.includes('plugins.bundle.config'), 'must reference the plugins.bundle.config slot');
   assert.ok(
-    text.includes('@local/dsh-context-rag#dsh-context-rag'),
-    'must register slot key @local/dsh-context-rag#dsh-context-rag',
+    text.includes('key: "@local/dsh-context-rag"'),
+    'must register slot key @local/dsh-context-rag',
+  );
+  assert.ok(
+    !text.includes('plugins.row.config'),
+    'must not register the plugins.row.config slot (no secondary row page)',
   );
 });
 

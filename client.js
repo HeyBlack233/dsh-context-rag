@@ -1,8 +1,9 @@
 "use strict";
 
 // @local/dsh-context-rag -- DSH web client plugin: config page for the
-// dsh-context-rag backend service. Registers a "plugins.row.config" slot and
-// talks to the REST API of the server plugin.
+// dsh-context-rag backend service. Registers a "plugins.bundle.config" slot so
+// the panel renders on the bundle's own page, and talks to the REST API of the
+// server plugin.
 
 window.__ModuleLoader__.load({
   id: "@local/dsh-context-rag",
@@ -45,10 +46,7 @@ window.__ModuleLoader__.load({
     // Short alias to keep the JSX-free tree readable.
     const el = (tag, props, ...children) => React.createElement(tag, props, ...children);
 
-    function ConfigPage({ view, t }) {
-      // One localized line rendered inside the plugin row.
-      if (view === "summary") return el("span", { className: "dscr-summary" }, t("summary"));
-
+    function ConfigPage({ t }) {
       const [status, setStatus] = React.useState(null);
       const [configText, setConfigText] = React.useState("");
       const [busy, setBusy] = React.useState("");
@@ -295,7 +293,7 @@ window.__ModuleLoader__.load({
 
     const messages = {
       en: {
-        summary: "Context RAG", title: "Context RAG",
+        title: "Context RAG",
         pairCount: "Pairs", indexedCount: "Indexed", pendingCount: "Pending", errorCount: "Errors",
         homePath: "Home path", embedding: "Embedding model", dim: "Dimensions", indexer: "Indexer",
         running: "running", stopped: "stopped", initError: "Init error", lastError: "Last error", none: "none", unknown: "unknown",
@@ -317,7 +315,7 @@ window.__ModuleLoader__.load({
         testOk: "Connection OK", jsonInvalid: "Invalid JSON", busy: "Busy", ok: "OK", error: "Error",
       },
       zh: {
-        summary: "Context RAG", title: "Context RAG",
+        title: "Context RAG",
         pairCount: "条目数", indexedCount: "已索引", pendingCount: "待处理", errorCount: "错误",
         homePath: "主页路径", embedding: "嵌入模型", dim: "维度", indexer: "索引器",
         running: "运行中", stopped: "已停止", initError: "初始化错误", lastError: "最近错误", none: "无", unknown: "未知",
@@ -347,7 +345,7 @@ window.__ModuleLoader__.load({
           const style = document.createElement("style");
           style.id = "dsh-context-rag-styles";
           style.textContent = [
-            ".dscr-page { max-width: 840px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; } .dscr-summary { font-size: 13px; color: var(--dsw-alias-label-primary, inherit); }",
+            ".dscr-page { max-width: 840px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; }",
             ".dscr-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 16px; color: var(--dsw-alias-label-primary, inherit); } .dscr-title { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--dsw-alias-label-primary, inherit); }",
             ".dscr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; } .dscr-stat { background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 8px 12px; }",
             ".dscr-stat-value { font-size: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-stat-label { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }",
@@ -374,12 +372,13 @@ window.__ModuleLoader__.load({
           ctx.effect(() => ctx.locale(LOCALE, messages), "context-rag: locale");
         }
 
-        // Mount the config page into the plugin row.
-        ctx.slots.inject("plugins.row.config", () =>
+        // Mount the config page on the bundle's own detail page, above the
+        // Components section. Singular bundle config, keyed by package name.
+        ctx.slots.inject("plugins.bundle.config", () =>
           ctx.slots.register(
             {
-              name: "plugins.row.config",
-              key: "@local/dsh-context-rag#dsh-context-rag",
+              name: "plugins.bundle.config",
+              key: "@local/dsh-context-rag",
               locale: LOCALE,
             },
             ConfigPage

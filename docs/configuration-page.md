@@ -11,10 +11,11 @@ their defaults, see [configuration.md](configuration.md).
 ## How the page is wired
 
 The page is the plugin's web client (`client.js`). It is registered on the
-**Plugins** page: each plugin row has a **Configure** entry that opens the
-config page. The row wiring is declared in the plugin manifest under the
-`plugins.row.config` key, using the bundle scoped identifier
-`@local/dsh-context-rag#dsh-context-rag`.
+**Plugins** page as the bundle's own configuration panel: the panel renders on
+the `@local/dsh-context-rag` bundle detail page between the description and the
+**Components** section, so there is no separate row page or secondary menu.
+The wiring is declared under the `plugins.bundle.config` key, using the bundle
+package name `@local/dsh-context-rag` as the key.
 
 All reads and writes go through the plugin's internal API exposed to the host
 at a single endpoint:

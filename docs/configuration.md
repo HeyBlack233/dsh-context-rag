@@ -1,9 +1,9 @@
 # Configuration
 
-`context-rag` is configured through its plugin row in the Harness GUI
-(`client.js`). The runtime config is persisted to `config.json` under the data
-home (atomic write, mode `0600`). API keys are redacted and **never returned to
-the browser**.
+`context-rag` is configured through the panel on the plugin's page in the
+Harness GUI (`client.js`). The runtime config is persisted to `config.json`
+under the data home (atomic write, mode `0600`). API keys are redacted and
+**never returned to the browser**.
 
 Defaults are exact and grouped below. Endpoint URLs and models are empty by
 default, so the plugin starts in a passive state until an embedding endpoint is

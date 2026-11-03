@@ -139,12 +139,16 @@ test('locale resources parse and expose nonempty meta', () => {
   }
 });
 
-test('client.js registers the config slot and key', () => {
+test('client.js registers the bundle config slot and key', () => {
   const text = read('client.js');
-  assert.ok(text.includes('plugins.row.config'), 'slot name plugins.row.config');
+  assert.ok(text.includes('plugins.bundle.config'), 'slot name plugins.bundle.config');
   assert.ok(
-    text.includes('@local/dsh-context-rag#dsh-context-rag'),
-    'slot key @local/dsh-context-rag#dsh-context-rag',
+    text.includes('key: "@local/dsh-context-rag"'),
+    'slot key @local/dsh-context-rag',
+  );
+  assert.ok(
+    !text.includes('plugins.row.config'),
+    'no plugins.row.config slot (the row detail page is removed)',
   );
 });
 
