@@ -1,0 +1,54 @@
+{
+  "name": "@local/dsh-context-rag",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adds retrieval-augmented generation (RAG) to DeepSeek Harness sessions: stores each turn's (user message, final assistant reply) pair in a human-readable JSONL store, indexes embeddings in SQLite, and injects related past turns from the current workspace (or all workspaces) as read-only context before each model step.",
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/**/*.js",
+    "locale/*.json",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/**/*.md",
+    ".github/workflows/*.yml"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "for f in index.js client.js lib/*.js test/*.js; do node --check \"$f\" || exit 1; done",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "rag",
+    "context"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  }
+}

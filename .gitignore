@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Lockfiles (no dependencies are declared in this plugin)
+package-lock.json
+npm-shrinkwrap.json
+yarn.lock
+pnpm-lock.yaml
+
+# Local data and index artifacts
+*.sqlite
+*.sqlite-*
+*.jsonl
+!**/fixtures/**/*.jsonl
+
+# Logs
+*.log
+logs/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/

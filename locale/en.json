@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Context RAG",
+    "description": "Adds retrieval-augmented generation to DSH sessions: stores each turn's (user message, final assistant reply) pair in a human-readable JSONL store, indexes embeddings in SQLite, and injects related past turns retrieved from the current workspace (or all workspaces) as read-only context before each model step."
+  }
+}

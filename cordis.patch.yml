@@ -1,0 +1,6 @@
+# Bundle patch for @local/dsh-context-rag.
+#
+# No config block yet; configuration keys are defined in a later phase.
+- insert:
+    - id: dsh-context-rag
+      name: '@local/dsh-context-rag'
