@@ -42,7 +42,8 @@ The page is split into the following sections:
     `timeoutMs`, `maxRetries`, `batchSize`, `maxEmbeddingChars`;
   - **Rerank** — `enabled`, `baseUrl`, `model`, `path`, `apiKey`;
   - **Retrieval** — `injectionEnabled`, `scope` (`workspace` / `all`),
-    `candidateLimit`, `topK`, `minScore`, `maxContextChars`, `timeoutMs`;
+    `candidateLimit`, `topK`, `minScore`, `rerankMinScore`,
+    `maxContextChars`, `timeoutMs`;
   - **Indexing** — `enabled`, `pollIntervalMs`, `retryDelayMs`, `maxAttempts`.
 - **Advanced JSON** — an editable JSON view of the whole config for fields
   not exposed in the structured form. Editing either view updates the same

@@ -152,6 +152,119 @@ test("maps rerank indices, sorts by rerank score, and slices topK", async () => 
   assert.equal(calls[0].documents[0], "User:\nc\n\nAssistant:\nC");
 });
 
+test("drops reranked candidates below rerankMinScore before injecting", async () => {
+  const candidates = [
+    { pairId: 1, userText: "a", assistantText: "A", vector: [0.9, 0, 0, 0] },
+    { pairId: 2, userText: "b", assistantText: "B", vector: [0.8, 0, 0, 0] },
+    { pairId: 3, userText: "c", assistantText: "C", vector: [0.7, 0, 0, 0] },
+  ];
+  const reranker = {
+    async rerank({ documents }) {
+      // Every candidate clears the cosine prefilter, but only the first
+      // reranked result clears rerankMinScore.
+      return {
+        results: [
+          { index: 1, document: documents[1], score: 0.95 },
+          { index: 2, document: documents[2], score: 0.2 },
+          { index: 0, document: documents[0], score: 0.01 },
+        ],
+        model: "r",
+      };
+    },
+  };
+  const retrieval = {
+    ...makeConfig().retrieval,
+    minScore: 0.4,
+    rerankMinScore: 0.4,
+    topK: 2,
+    candidateLimit: 10,
+  };
+  const retriever = makeRetriever({
+    config: makeConfig({ rerank: { enabled: true, model: "r" }, retrieval }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    reranker,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x" });
+  assert.equal(result.stats.reranked, true);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), [2]);
+  assert.equal(result.pairs[0].score, 0.95);
+  assert.ok(result.pairs.every((p) => p.score >= 0.4));
+});
+
+test("uses separate cosine and rerank thresholds", async () => {
+  const candidates = [
+    { pairId: 1, userText: "a", assistantText: "A", vector: [0.9, 0, 0, 0] },
+    { pairId: 2, userText: "b", assistantText: "B", vector: [0.8, 0, 0, 0] },
+  ];
+  const reranker = {
+    async rerank({ documents }) {
+      return {
+        results: [
+          { index: 0, document: documents[0], score: 0.2 },
+          { index: 1, document: documents[1], score: 0.18 },
+        ],
+        model: "r",
+      };
+    },
+  };
+  // Cosine must be >= 0.4, but the rerank threshold is lower: 0.2 still
+  // passes on its own scale.
+  const retrieval = {
+    ...makeConfig().retrieval,
+    minScore: 0.4,
+    rerankMinScore: 0.15,
+    topK: 2,
+    candidateLimit: 10,
+  };
+  const retriever = makeRetriever({
+    config: makeConfig({ rerank: { enabled: true, model: "r" }, retrieval }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    reranker,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x" });
+  assert.equal(result.stats.reranked, true);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), [1, 2]);
+});
+
+test("injects no pairs when every reranked candidate is below rerankMinScore", async () => {
+  const candidates = [
+    { pairId: 1, userText: "a", assistantText: "A", vector: [0.8, 0, 0, 0] },
+    { pairId: 2, userText: "b", assistantText: "B", vector: [0.7, 0, 0, 0] },
+  ];
+  const reranker = {
+    async rerank({ documents }) {
+      return {
+        results: [
+          { index: 0, document: documents[0], score: 0.013 },
+          { index: 1, document: documents[1], score: 0.002 },
+        ],
+        model: "r",
+      };
+    },
+  };
+  const retrieval = {
+    ...makeConfig().retrieval,
+    minScore: 0.1,
+    rerankMinScore: 0.4,
+    topK: 2,
+    candidateLimit: 10,
+  };
+  const retriever = makeRetriever({
+    config: makeConfig({ rerank: { enabled: true, model: "r" }, retrieval }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    reranker,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x" });
+  assert.equal(result.stats.reranked, true);
+  assert.deepEqual(result.pairs, []);
+});
+
 test("falls back to cosine topK when rerank throws", async () => {
   const candidates = [
     { pairId: 1, userText: "a", assistantText: "A", vector: [0.3, 0, 0, 0] },

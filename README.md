@@ -48,7 +48,10 @@ configuration panel above the **Components** section:
 - Enable **rerank** if you want candidates re-ranked before injection.
 - `scope` — `workspace` (default) or `all`.
 
-Defaults: `topN = 20`, `topK = 5`, `minScore = 0.4`.
+Defaults: `candidateLimit = 20`, `topK = 5`, `minScore = 0.40`,
+`rerankMinScore = 0.40`. `minScore` filters cosine similarity before reranking;
+`rerankMinScore` filters the reranker's relevance score. Both range from `0.00`
+to `1.00` with two decimals.
 
 ## Data layout
 

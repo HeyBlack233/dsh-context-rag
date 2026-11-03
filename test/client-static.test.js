@@ -114,10 +114,25 @@ test('client.js: structured form markers and field paths exist', () => {
     'retrieval.scope',
     'retrieval.topK',
     'retrieval.minScore',
+    'retrieval.rerankMinScore',
     'indexing.enabled',
   ]) {
     assert.ok(text.includes(fieldPath), `must bind field path ${fieldPath}`);
   }
+});
+
+test('client.js: score inputs are two-decimal 0.00-1.00 fields', () => {
+  const text = readClient();
+  for (const label of ['minScore', 'rerankMinScore']) {
+    assert.ok(
+      text.includes(`numRow("${label}",`),
+      `must render a numeric row for ${label}`,
+    );
+  }
+  assert.ok(
+    text.includes('step: 0.01, min: 0, max: 1, fixed: 2'),
+    'score rows must use a 0.01 step, 0-1 range, and two-decimal display',
+  );
 });
 
 test('client.js: API key input is not forced empty', () => {
@@ -149,7 +164,7 @@ test('client.js: EN/ZH parity for every UI translation key', () => {
     'apiKey', 'clearKey', 'timeoutMs', 'maxRetries', 'batchSize',
     'maxEmbeddingChars', 'rerankEnabled', 'rerankBaseUrl', 'rerankModel',
     'rerankPath', 'injectionEnabled', 'scope', 'scopeWorkspace', 'scopeAll',
-    'candidateLimit', 'topK', 'minScore', 'maxContextChars',
+    'candidateLimit', 'topK', 'minScore', 'rerankMinScore', 'maxContextChars',
     'indexingEnabled', 'pollIntervalMs', 'retryDelayMs', 'maxAttempts',
     'configHelp', 'reload', 'save', 'testEmbedding', 'testRerank',
     'rebuild', 'clear', 'confirmClear', 'saved', 'cleared', 'rebuilt',

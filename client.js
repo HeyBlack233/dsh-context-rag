@@ -191,14 +191,21 @@ window.__ModuleLoader__.load({
             onChange: (e) => updateField(path, e.target.value),
           }));
 
-      const numRow = (labelKey, path, { int = false, step } = {}) =>
-        el("div", { className: "dscr-form-row" },
+      const numRow = (labelKey, path, { int = false, step, min, max, fixed } = {}) => {
+        const raw = read(path, "");
+        // Score fields show exactly two decimals (e.g. 0.40, not 0.4).
+        const value = typeof fixed === "number" && typeof raw === "number" && Number.isFinite(raw)
+          ? raw.toFixed(fixed)
+          : raw;
+        return el("div", { className: "dscr-form-row" },
           el("label", null, t(labelKey)),
           el("input", {
             className: "dscr-input",
             type: "number",
             step,
-            value: read(path, ""),
+            min,
+            max,
+            value,
             disabled: formDisabled,
             onChange: (e) => {
               const v = e.target.value;
@@ -207,6 +214,7 @@ window.__ModuleLoader__.load({
               updateField(path, Number.isNaN(n) ? null : n);
             },
           }));
+      };
 
       const apiKeyRow = (labelKey, path) =>
         el("div", { className: "dscr-form-row" },
@@ -260,7 +268,8 @@ window.__ModuleLoader__.load({
           scopeRow,
           numRow("candidateLimit", "retrieval.candidateLimit", { int: true }),
           numRow("topK", "retrieval.topK", { int: true }),
-          numRow("minScore", "retrieval.minScore", { step: 0.01 }),
+          numRow("minScore", "retrieval.minScore", { step: 0.01, min: 0, max: 1, fixed: 2 }),
+          numRow("rerankMinScore", "retrieval.rerankMinScore", { step: 0.01, min: 0, max: 1, fixed: 2 }),
           numRow("maxContextChars", "retrieval.maxContextChars", { int: true }),
           numRow("timeoutMs", "retrieval.timeoutMs", { int: true }),
         ]),
@@ -321,7 +330,7 @@ window.__ModuleLoader__.load({
         maxEmbeddingChars: "Max embedding chars",
         rerankEnabled: "Rerank enabled", rerankBaseUrl: "Rerank base URL", rerankModel: "Rerank model", rerankPath: "Rerank path",
         injectionEnabled: "Inject context", scope: "Scope", scopeWorkspace: "Workspace", scopeAll: "All",
-        candidateLimit: "Candidate limit", topK: "Top K", minScore: "Min score", maxContextChars: "Max context chars",
+        candidateLimit: "Candidate limit", topK: "Top K", minScore: "Min cosine score", rerankMinScore: "Min rerank score", maxContextChars: "Max context chars",
         indexingEnabled: "Indexing enabled", pollIntervalMs: "Poll interval (ms)", retryDelayMs: "Retry delay (ms)", maxAttempts: "Max attempts",
         configHelp: "Edit the JSON directly. API keys are write-only: add a string \"apiKey\" field (e.g. embedding.apiKey) to set one; it is sent to the server and never shown again (apiKeySet / apiKeyPreview only indicate whether a key is set).",
         reload: "Reload", save: "Save", testEmbedding: "Test embedding", testRerank: "Test rerank",
@@ -344,7 +353,7 @@ window.__ModuleLoader__.load({
         maxEmbeddingChars: "最大嵌入字符数",
         rerankEnabled: "启用重排", rerankBaseUrl: "重排接口地址", rerankModel: "重排模型", rerankPath: "重排路径",
         injectionEnabled: "注入上下文", scope: "检索范围", scopeWorkspace: "当前工作区", scopeAll: "全部工作区",
-        candidateLimit: "候选数量", topK: "最终条数", minScore: "最低相似度", maxContextChars: "上下文字符上限",
+        candidateLimit: "候选数量", topK: "最终条数", minScore: "余弦最低分", rerankMinScore: "重排最低分", maxContextChars: "上下文字符上限",
         indexingEnabled: "启用索引", pollIntervalMs: "轮询间隔（毫秒）", retryDelayMs: "重试延迟（毫秒）", maxAttempts: "最大尝试次数",
         configHelp: "直接编辑 JSON。API 密钥为只写：添加字符串字段 \"apiKey\"（如 embedding.apiKey）即可设置；密钥只发送给服务器、永不显示（仅通过 apiKeySet / apiKeyPreview 表明是否已设置）。",
         reload: "重新加载", save: "保存", testEmbedding: "测试嵌入", testRerank: "测试重排",

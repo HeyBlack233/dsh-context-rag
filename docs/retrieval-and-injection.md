@@ -18,10 +18,15 @@ user message**; subsequent steps in the same turn do not re-inject.
    query are considered).
 3. **Score** — cosine similarity is computed as the dot product of the
    normalized query vector and each normalized candidate vector.
-4. **Filter** — keep candidates at or above `minScore`.
+4. **Cosine filter** — keep candidates whose cosine similarity is at or above
+   `minScore`.
 5. **Optional rerank** — if the reranker is enabled, pass candidates to the
-   OpenAI-compatible rerank endpoint and keep its `topN`.
-6. **Select** — keep the top `topK` pairs.
+   OpenAI-compatible rerank endpoint and replace each candidate's score with
+   the reranker's relevance score.
+6. **Rerank filter** — when rerank is enabled, drop candidates whose rerank
+   relevance score is below `rerankMinScore`. This is a separate threshold
+   because cosine similarity and rerank relevance are different scales.
+7. **Select** — keep the top `topK` pairs.
 
 The whole pipeline is bounded by `timeoutMs` and `scanLimit`. Failures are
 fail-open: on timeout or error, injection is skipped and a warning is logged.
@@ -42,7 +47,11 @@ See [configuration.md](configuration.md) for the `scope` field.
 - Cosine similarity equals the dot product of normalized vectors, so candidate
   and query vectors are normalized before scoring.
 - `candidateLimit` caps candidates considered by the scan; `minScore` is the
-  cosine threshold below which candidates are dropped.
+  cosine threshold below which candidates are dropped before reranking.
+- `rerankMinScore` is the threshold for the reranker's relevance scores. It
+  only applies when rerank is enabled, and the injected `score` is the score
+  that passed it, so it is never below `rerankMinScore`.
+- Both thresholds accept values from `0.00` to `1.00` with two decimals.
 - `topK` is the final number of pairs injected (after rerank, if enabled).
 - `maxContextChars` caps the total length of the injected context text.
 

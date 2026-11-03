@@ -25,6 +25,9 @@ Release Date: TBD
   endpoint.
 - Pre-step durable context injection: retrieved pairs are injected as a
   read-only context message shown in the Trajectory.
+- Cosine and rerank score thresholds are separate settings: `minScore` filters
+  cosine similarity before reranking, and `rerankMinScore` filters the rerank
+  relevance score. Both range from `0.00` to `1.00` with two decimals.
 - Configure panel on the plugin's page in the DSH Web GUI, above the
   **Components** section (no separate row page): separate cards for the
   embedding, rerank, retrieval, and indexing settings, an advanced JSON view,

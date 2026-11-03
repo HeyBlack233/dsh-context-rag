@@ -81,6 +81,7 @@ describe("DEFAULT_CONFIG", () => {
         candidateLimit: 20,
         topK: 5,
         minScore: 0.4,
+        rerankMinScore: 0.4,
         maxContextChars: 3000,
         timeoutMs: 3000,
         injectionEnabled: true,
@@ -232,6 +233,17 @@ describe("normalizeConfig", () => {
     test("minScore out of range", () => {
       assertInvalid({ retrieval: { minScore: -0.1 } }, "retrieval.minScore");
       assertInvalid({ retrieval: { minScore: 1.1 } }, "retrieval.minScore");
+    });
+
+    test("rerankMinScore out of range", () => {
+      assertInvalid(
+        { retrieval: { rerankMinScore: -0.1 } },
+        "retrieval.rerankMinScore",
+      );
+      assertInvalid(
+        { retrieval: { rerankMinScore: 1.1 } },
+        "retrieval.rerankMinScore",
+      );
     });
 
     test("maxContextChars out of range", () => {

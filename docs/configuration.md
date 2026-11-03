@@ -42,7 +42,8 @@ Optional; disabled by default.
 | `scope` | `"workspace"` | Candidate scope: `"workspace"` (exact `cwd`) or `"all"`. |
 | `candidateLimit` | `20` | Max candidates scanned from the index. |
 | `topK` | `5` | Number of pairs injected into context. |
-| `minScore` | `0.4` | Minimum cosine similarity to be considered. |
+| `minScore` | `0.40` | Minimum cosine similarity before reranking. |
+| `rerankMinScore` | `0.40` | Minimum rerank relevance score; applies only when rerank is enabled. |
 | `maxContextChars` | `3000` | Cap on injected context text length. |
 | `timeoutMs` | `3000` | Retrieval pipeline timeout. |
 | `injectionEnabled` | `true` | Whether to inject retrieved context at all. |
