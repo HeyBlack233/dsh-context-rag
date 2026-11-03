@@ -26,7 +26,7 @@ Release Date: TBD
 - Pre-step durable context injection: retrieved pairs are injected as a
   read-only context message shown in the Trajectory.
 - Configure panel on the plugin's page in the DSH Web GUI, above the
-  **Components** section (no separate row page): a structured form for
+  **Components** section (no separate row page): separate cards for the
   embedding, rerank, retrieval, and indexing settings, an advanced JSON view,
   write-only API-key handling, and English/Simplified Chinese UI.
 - Tests, documentation, and a CI workflow covering the plugin.

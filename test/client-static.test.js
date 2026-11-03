@@ -98,7 +98,7 @@ test('client.js: CSS uses only known theme tokens', () => {
 test('client.js: structured form markers and field paths exist', () => {
   const text = readClient();
   for (const marker of [
-    'settingsTitle',
+    'formCard',
     'advancedTitle',
     'updateField',
     'apiKeyRow',
@@ -130,10 +130,21 @@ test('client.js: API key input is not forced empty', () => {
   );
 });
 
+test('client.js: one settings card per configuration category', () => {
+  const text = readClient();
+  for (const titleKey of ['embeddingTitle', 'rerankTitle', 'retrievalTitle', 'indexingTitle']) {
+    assert.ok(
+      text.includes(`formCard("${titleKey}"`),
+      `must render a separate card for ${titleKey}`,
+    );
+  }
+});
+
 test('client.js: EN/ZH parity for every UI translation key', () => {
   const text = readClient();
   const requiredKeys = [
-    'settingsTitle', 'advancedTitle', 'notSet', 'invalidJsonHint',
+    'embeddingTitle', 'rerankTitle', 'retrievalTitle', 'indexingTitle',
+    'advancedTitle', 'notSet', 'invalidJsonHint',
     'enabled', 'embeddingBaseUrl', 'embeddingModel', 'dimensions',
     'apiKey', 'clearKey', 'timeoutMs', 'maxRetries', 'batchSize',
     'maxEmbeddingChars', 'rerankEnabled', 'rerankBaseUrl', 'rerankModel',

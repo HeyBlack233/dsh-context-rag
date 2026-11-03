@@ -36,13 +36,14 @@ The page is split into the following sections:
 
 - **Status** — pair/index/pending/error counts, data home, embedding model
   and dimension, indexer running state, and the last/init errors.
-- **Settings** — a structured, responsive form for the common fields:
-  - embedding `enabled`, `baseUrl`, `model`, `dimensions`, `apiKey`,
+- **Settings** — four separate cards, one per configuration category, each
+  with its own responsive form:
+  - **Embedding** — `enabled`, `baseUrl`, `model`, `dimensions`, `apiKey`,
     `timeoutMs`, `maxRetries`, `batchSize`, `maxEmbeddingChars`;
-  - rerank `enabled`, `baseUrl`, `model`, `path`, `apiKey`;
-  - retrieval `injectionEnabled`, `scope` (`workspace` / `all`),
+  - **Rerank** — `enabled`, `baseUrl`, `model`, `path`, `apiKey`;
+  - **Retrieval** — `injectionEnabled`, `scope` (`workspace` / `all`),
     `candidateLimit`, `topK`, `minScore`, `maxContextChars`, `timeoutMs`;
-  - indexing `enabled`, `pollIntervalMs`, `retryDelayMs`, `maxAttempts`.
+  - **Indexing** — `enabled`, `pollIntervalMs`, `retryDelayMs`, `maxAttempts`.
 - **Advanced JSON** — an editable JSON view of the whole config for fields
   not exposed in the structured form. Editing either view updates the same
   object; Save sends a single `config.save` patch.

@@ -228,10 +228,16 @@ window.__ModuleLoader__.load({
             el("option", { value: "workspace" }, t("scopeWorkspace")),
             el("option", { value: "all" }, t("scopeAll"))));
 
-      const settingsCard = el("div", { className: "dscr-card" },
-        el("h2", { className: "dscr-title" }, t("settingsTitle")),
-        parsedConfig() ? null : el("p", { className: "dscr-help" }, t("invalidJsonHint")),
-        el("div", { className: "dscr-form" },
+      // One card per configuration category, so embedding, rerank, retrieval,
+      // and indexing settings stay visually separate.
+      const formCard = (titleKey, rows, { hint = false } = {}) =>
+        el("div", { className: "dscr-card" },
+          el("h2", { className: "dscr-title" }, t(titleKey)),
+          hint && !parsedConfig() ? el("p", { className: "dscr-help" }, t("invalidJsonHint")) : null,
+          el("div", { className: "dscr-form" }, ...rows));
+
+      const settingsCards = [
+        formCard("embeddingTitle", [
           checkRow("enabled", "enabled"),
           textRow("embeddingBaseUrl", "embedding.baseUrl"),
           textRow("embeddingModel", "embedding.model"),
@@ -241,11 +247,15 @@ window.__ModuleLoader__.load({
           numRow("maxRetries", "embedding.maxRetries", { int: true }),
           numRow("batchSize", "embedding.batchSize", { int: true }),
           numRow("maxEmbeddingChars", "embedding.maxEmbeddingChars", { int: true }),
+        ], { hint: true }),
+        formCard("rerankTitle", [
           checkRow("rerankEnabled", "rerank.enabled"),
           textRow("rerankBaseUrl", "rerank.baseUrl"),
           textRow("rerankModel", "rerank.model"),
           textRow("rerankPath", "rerank.path"),
           apiKeyRow("apiKey", "rerank.apiKey"),
+        ]),
+        formCard("retrievalTitle", [
           checkRow("injectionEnabled", "retrieval.injectionEnabled"),
           scopeRow,
           numRow("candidateLimit", "retrieval.candidateLimit", { int: true }),
@@ -253,10 +263,14 @@ window.__ModuleLoader__.load({
           numRow("minScore", "retrieval.minScore", { step: 0.01 }),
           numRow("maxContextChars", "retrieval.maxContextChars", { int: true }),
           numRow("timeoutMs", "retrieval.timeoutMs", { int: true }),
+        ]),
+        formCard("indexingTitle", [
           checkRow("indexingEnabled", "indexing.enabled"),
           numRow("pollIntervalMs", "indexing.pollIntervalMs", { int: true }),
           numRow("retryDelayMs", "indexing.retryDelayMs", { int: true }),
-          numRow("maxAttempts", "indexing.maxAttempts", { int: true })));
+          numRow("maxAttempts", "indexing.maxAttempts", { int: true }),
+        ]),
+      ];
 
       return el("div", { className: "dscr-page" },
         el("div", { className: "dscr-card", "aria-label": t("title") },
@@ -272,7 +286,7 @@ window.__ModuleLoader__.load({
           field(t("indexer"), runtime.indexerRunning ? t("running") : t("stopped")),
           field(t("initError"), runtime.initError || t("none")),
           field(t("lastError"), runtime.lastError || t("none"))),
-        settingsCard,
+        ...settingsCards,
         el("div", { className: "dscr-card" },
           el("h2", { className: "dscr-title" }, t("advancedTitle")),
           el("textarea", { className: "dscr-textarea", value: configText, spellCheck: false, "aria-label": t("advancedTitle"), onChange: (e) => setConfigText(e.target.value) }),
@@ -298,7 +312,8 @@ window.__ModuleLoader__.load({
         homePath: "Home path", embedding: "Embedding model", dim: "Dimensions", indexer: "Indexer",
         running: "running", stopped: "stopped", initError: "Init error", lastError: "Last error", none: "none", unknown: "unknown",
         configTitle: "Configuration (JSON)",
-        settingsTitle: "Settings", advancedTitle: "Advanced JSON",
+        advancedTitle: "Advanced JSON",
+        embeddingTitle: "Embedding", rerankTitle: "Rerank", retrievalTitle: "Retrieval", indexingTitle: "Indexing",
         notSet: "not set", invalidJsonHint: "Invalid JSON — editing disabled.",
         enabled: "Enabled", embeddingBaseUrl: "Embedding base URL", embeddingModel: "Embedding model",
         dimensions: "Dimensions", apiKey: "API key", clearKey: "Clear key",
@@ -320,7 +335,8 @@ window.__ModuleLoader__.load({
         homePath: "主页路径", embedding: "嵌入模型", dim: "维度", indexer: "索引器",
         running: "运行中", stopped: "已停止", initError: "初始化错误", lastError: "最近错误", none: "无", unknown: "未知",
         configTitle: "配置",
-        settingsTitle: "设置", advancedTitle: "高级 JSON",
+        advancedTitle: "高级 JSON",
+        embeddingTitle: "嵌入", rerankTitle: "重排", retrievalTitle: "检索", indexingTitle: "索引",
         notSet: "未设置", invalidJsonHint: "JSON 无效——已禁用编辑。",
         enabled: "启用", embeddingBaseUrl: "嵌入接口地址", embeddingModel: "嵌入模型",
         dimensions: "维度", apiKey: "API 密钥", clearKey: "清除密钥",
