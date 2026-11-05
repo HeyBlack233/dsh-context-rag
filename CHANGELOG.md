@@ -51,4 +51,31 @@ Release Date: TBD
   exclusion counters. None of this is written into the injected context text.
 - Existing `config.json` files gain the new defaults automatically; nothing is
   deleted or migrated.
+- **Memory tools** (`memory_list`, `memory_get`, `memory_write`,
+  `memory_forget`): persistent Markdown notes under `memories/global/` and
+  `memories/workspaces/<workspace-slug>/`, each with YAML front matter
+  (`name`, `description`, `type`) and a `MEMORY.md` index. The tools operate
+  only on `global` or the current workspace.
+- **Memory recall**: memories from the global store and the current workspace
+  are retrieved together with conversation pairs through the same
+  embedding/outbox, cosine scoring, `scanLimit`, `candidateLimit`/`topN`,
+  rerank, `topK`, and `maxContextChars` pipeline. `retrieval.scope` does not
+  affect memory recall; same-session exclusion applies to conversation pairs
+  only, while turn dedupe applies to both.
+- **Memory write rules**: `memory_write` overwrites an existing same-name
+  memory, requires `name` to match `[A-Za-z0-9_-]+` (reserving `MEMORY`), and
+  caps `content` at `embedding.maxEmbeddingChars`. Names and descriptions are
+  expected in English; content may be in the user's language. The tool lists
+  the index before writing to avoid semantic duplicates and updates the same
+  name for the same topic.
+- **Memory forgetting**: `memory_forget` runs only on explicit user request,
+  matches `name` + `description` exactly, renames the file to
+  `<name>.forgotten`, and removes it from the `MEMORY.md` index and SQLite
+  while keeping the file on disk for history. A new memory with the same name
+  can be created later; the old `.forgotten` file is preserved.
+- **Startup memory scan**: manual Markdown edits are synchronized on startup —
+  `MEMORY.md` indexes are rewritten and SQLite vectors for missing or
+  `.forgotten` files are removed. There is no real-time file watcher.
+- Memories are treated like retrieved pairs: read-only, **untrusted** reference
+  material with the same fixed warning.
 - Tests, documentation, and a CI workflow covering the plugin.

@@ -85,6 +85,38 @@ class FakeDb {
       pairId: record.pairId,
       userText: record.user,
       assistantText: record.assistant,
+      recordType: "pair",
+      embedding: existing?.embedding ?? null,
+      model: existing?.model ?? null,
+      dim: existing?.dim ?? null,
+    });
+    if (!existing) {
+      this.outbox.set(record.pairId, { reason: "new", attempts: 0, nextAt: 0, lastError: null });
+    }
+    return record;
+  }
+
+  upsertMemory(record) {
+    this.calls.push("upsertMemory");
+    // Mirror the real db.js validation so malformed records throw here too,
+    // letting reconcile's skip path be exercised.
+    if (record === null || typeof record !== "object" || Array.isArray(record)) {
+      throw new TypeError("memory record must be a plain object");
+    }
+    if (typeof record.pairId !== "string" || record.pairId.trim().length === 0) {
+      throw new TypeError("memory pairId must be a non-empty string");
+    }
+    if (typeof record.content !== "string") {
+      throw new TypeError("memory content must be a string");
+    }
+    const existing = this.pairs.get(record.pairId);
+    this.pairs.set(record.pairId, {
+      pairId: record.pairId,
+      userText: record.content,
+      assistantText: "",
+      recordType: "memory",
+      memoryType: record.memoryType ?? "workspace",
+      name: record.name ?? "",
       embedding: existing?.embedding ?? null,
       model: existing?.model ?? null,
       dim: existing?.dim ?? null,
@@ -97,7 +129,15 @@ class FakeDb {
 
   getPair(pairId) {
     const pair = this.pairs.get(pairId);
-    return pair ? { pairId, userText: pair.userText, assistantText: pair.assistantText } : null;
+    if (!pair) return null;
+    return {
+      pairId,
+      userText: pair.userText,
+      assistantText: pair.assistantText,
+      recordType: pair.recordType ?? "pair",
+      memoryType: pair.memoryType ?? null,
+      name: pair.name ?? "",
+    };
   }
 
   claimDue(now, limit) {
@@ -271,6 +311,22 @@ function sampleRecord(pairId, overrides = {}) {
     createdAt: 1,
     user: `user ${pairId}`,
     assistant: `assistant ${pairId}`,
+    ...overrides,
+  };
+}
+
+/** @param {string} pairId @param {object} [overrides] @returns {object} A valid memory record. */
+function sampleMemoryRecord(pairId, overrides = {}) {
+  return {
+    pairId,
+    recordType: "memory",
+    memoryType: "workspace",
+    type: "note",
+    name: `memory ${pairId}`,
+    description: "",
+    content: `content ${pairId}`,
+    cwd: "/work/proj",
+    createdAt: 1,
     ...overrides,
   };
 }
@@ -581,5 +637,173 @@ test("indexer: reindex and clear drive the database", async (t) => {
 
   const clearResult = indexer.clear();
   assert.deepEqual(clearResult, { cleared: true });
+  assert.equal(db.outbox.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Memories: reconcile syncs the memory store and pumpOnce embeds content.
+// ---------------------------------------------------------------------------
+
+test("indexer: reconcile syncs memoryStore records and drops forgotten ones", async (t) => {
+  const home = await makeHome(t);
+  await appendPair(join(home, "pairs", "w", "s1.jsonl"), sampleRecord("p1", { user: "u1", assistant: "a1" }));
+
+  const db = new FakeDb();
+  // Indexed but absent from the scan: must be dropped by finishReconcile.
+  db.upsertMemory(sampleMemoryRecord("m-gone"));
+  const memoryStore = {
+    scan: async () => [
+      sampleMemoryRecord("m1", { memoryType: "global", name: "Global note", content: "global content" }),
+      sampleMemoryRecord("m2", { memoryType: "workspace", content: "workspace content" }),
+    ],
+  };
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+    memoryStore,
+  });
+
+  await indexer.reconcile();
+
+  assert.ok(db.pairs.has("p1"), "p1 must be upserted from the JSONL store");
+  assert.ok(db.pairs.has("m1"), "m1 must be upserted from the memory store");
+  assert.ok(db.pairs.has("m2"), "m2 must be upserted from the memory store");
+  assert.ok(!db.pairs.has("m-gone"), "m-gone must be deleted by finishReconcile");
+  assert.equal(db.pairs.get("m1").userText, "global content");
+  assert.equal(db.pairs.get("m1").memoryType, "global");
+  assert.equal(db.pairs.get("m1").name, "Global note");
+  assert.equal(db.pairs.get("m2").recordType, "memory");
+  // Every surviving record was marked seen; the model change re-queues all of them.
+  assert.deepEqual(
+    [...db.outbox.values()].map((row) => row.reason),
+    ["model-changed", "model-changed", "model-changed"],
+  );
+  assert.equal(indexer.status().reconcileError, null);
+});
+
+test("indexer: reconcile without a memoryStore never calls upsertMemory", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+  });
+
+  await indexer.reconcile();
+
+  assert.equal(db.calls.filter((call) => call === "upsertMemory").length, 0);
+  assert.equal(indexer.status().reconcileError, null);
+});
+
+test("indexer: reconcile accepts a sync array from memoryStore.scan and skips invalid records", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  const warns = [];
+  const memoryStore = {
+    // A plain array (not a promise, not a generator) must also work.
+    scan: () => [
+      sampleMemoryRecord("m1", { content: "ok content" }),
+      { pairId: "m-bad", content: 42 }, // invalid: skipped with a warning
+    ],
+  };
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: { warn: (m) => warns.push(m) },
+    home,
+    memoryStore,
+  });
+
+  await indexer.reconcile();
+
+  assert.ok(db.pairs.has("m1"), "the valid memory must be upserted");
+  assert.ok(!db.pairs.has("m-bad"), "the invalid memory must be skipped");
+  assert.ok(warns.some((m) => m.includes("skipping invalid memory record m-bad")));
+  assert.equal(indexer.status().reconcileError, null);
+});
+
+test("indexer: pumpOnce embeds memory content without the User/Assistant wrapper", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  db.upsertMemory(sampleMemoryRecord("m1", { content: "plain memory content" }));
+  const embeddings = fakeEmbeddings({
+    vectors: [[1, 2]],
+    model: "text-embedding-3-small",
+    dimension: 2,
+  });
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings,
+    logger: null,
+    home,
+  });
+
+  const processed = await indexer.pumpOnce();
+
+  assert.equal(processed, 1);
+  assert.equal(embeddings.calls.length, 1);
+  assert.deepEqual(embeddings.calls[0].texts, ["plain memory content"]);
+  const pair = db.pairs.get("m1");
+  assert.ok(pair.embedding instanceof Float32Array);
+  assert.deepEqual([...pair.embedding], [1, 2]);
+  assert.equal(pair.model, "text-embedding-3-small");
+  assert.equal(db.outbox.size, 0);
+});
+
+test("indexer: pumpOnce applies maxEmbeddingChars to memory content", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  db.upsertMemory(sampleMemoryRecord("m1", { content: "x".repeat(300) }));
+  const embeddings = fakeEmbeddings({ vectors: [[1]], dimension: 1 });
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig({ maxEmbeddingChars: 100 }) },
+    embeddings,
+    logger: null,
+    home,
+  });
+
+  await indexer.pumpOnce();
+
+  assert.equal(embeddings.calls.length, 1);
+  assert.equal(embeddings.calls[0].texts[0].length, 100);
+  assert.ok(!embeddings.calls[0].texts[0].includes("User:"));
+});
+
+test("indexer: pumpOnce mixes pair and memory rows in one batch", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  seed(db, "p1", "hello", "world");
+  db.upsertMemory(sampleMemoryRecord("m1", { content: "memory body" }));
+  const embeddings = fakeEmbeddings({
+    vectors: [[1], [2]],
+    model: "text-embedding-3-small",
+    dimension: 1,
+  });
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings,
+    logger: null,
+    home,
+  });
+
+  const processed = await indexer.pumpOnce();
+
+  assert.equal(processed, 2);
+  assert.equal(embeddings.calls.length, 1);
+  // Outbox order is deterministic by (next_at, pair_id): "m1" sorts before "p1".
+  assert.deepEqual(embeddings.calls[0].texts, [
+    "memory body",
+    buildEmbeddingText({ user: "hello", assistant: "world" }, 8000),
+  ]);
   assert.equal(db.outbox.size, 0);
 });

@@ -27,6 +27,12 @@
   "engines": {
     "node": ">=22"
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+  },
   "scripts": {
     "check": "for f in index.js client.js lib/*.js test/*.js; do node --check \"$f\" || exit 1; done",
     "test": "node --test test/*.test.js"

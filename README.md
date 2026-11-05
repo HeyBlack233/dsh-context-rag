@@ -9,7 +9,10 @@ After each turn, the plugin stores the (user message, final assistant reply)
 pair in a human-readable JSONL store and indexes its embedding in SQLite.
 Before each model step, it retrieves similar past pairs from the current
 workspace (or all workspaces), optionally reranks them, and injects the top
-results as a read-only context message. The injected context is shown in the
+results as a read-only context message. Persistent **memories** — Markdown
+notes saved through the `memory_list` / `memory_get` / `memory_write` /
+`memory_forget` tools — are recalled alongside conversation pairs from the
+global store and the current workspace. The injected context is shown in the
 Trajectory so you can see exactly what was retrieved and used.
 
 ## Features
@@ -31,6 +34,14 @@ Trajectory so you can see exactly what was retrieved and used.
   persistent `recall-state.json`, pruned by `dedupeStateRetentionDays` and
   `dedupeStateMaxSessions`.
 - **Pre-step durable context injection** shown in the Trajectory.
+- **Persistent memories**: `memory_list` / `memory_get` / `memory_write` /
+  `memory_forget` manage Markdown notes under `memories/global/` and
+  `memories/workspaces/<workspace-slug>/`, each with YAML front matter and a
+  `MEMORY.md` index. Memories are recalled together with conversation pairs
+  through the same embedding/retrieval pipeline (global + current workspace,
+  independent of `retrieval.scope`); `memory_forget` renames a file to
+  `<name>.forgotten`, keeping its history while removing it from the index and
+  SQLite.
 - **Configure panel** on the plugin's page in the DSH Web GUI (above the
   **Components** section), with **English and Simplified Chinese** UI.
 
@@ -73,7 +84,10 @@ Everything lives under `$DSH_HOME/context-rag`:
 
 - `config.json` — plugin configuration.
 - `pairs/*.jsonl` — human-readable (user message, final assistant reply) pairs.
-- `index.sqlite` — the embedding index (rebuildable from `pairs/*.jsonl`).
+- `memories/` — Markdown memory files (`global/` and
+  `workspaces/<workspace-slug>/`, each with a `MEMORY.md` index).
+- `index.sqlite` — the embedding index (rebuildable from `pairs/*.jsonl` and
+  the memory files).
 - `recall-state.json` — turn-dedupe history (ids/turns/timestamps/counts only;
   safe to delete — dedupe history resets).
 
@@ -81,9 +95,13 @@ Everything lives under `$DSH_HOME/context-rag`:
 
 - **Turn-stopping write**: after the turn completes, the plugin stops the turn
   to durably store the pair and enqueue its embedding.
-- **Pre-step read**: before the next model step, it retrieves candidates and
-  (optionally) reranks them, then injects the top results as a read-only
-  context message that appears in the Trajectory.
+- **Memory write**: `memory_write` writes the Markdown file and refreshes the
+  `MEMORY.md` index first (the file write is the commit point), then enqueues
+  the embedding through the same outbox.
+- **Pre-step read**: before the next model step, it retrieves candidates —
+  conversation pairs plus global/current-workspace memories — and (optionally)
+  reranks them, then injects the top results as a read-only context message
+  that appears in the Trajectory.
 - **Fail-open**: if embeddings or retrieval fail, the step proceeds without
   injected context rather than blocking the conversation.
 

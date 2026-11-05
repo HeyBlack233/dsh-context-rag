@@ -2,9 +2,10 @@
  * dsh-context-rag plugin entry point.
  *
  * Wires the config store, index database, Phase-2 surfaces (capture, indexer,
- * retriever, injector) and the config HTTP API. `apply` never throws to the
- * Host: every fallible step is guarded, failures are logged and surfaced via
- * `initError`, and the API is registered even when the database is missing.
+ * retriever, injector), the memory store + `memory_*` agent tools, and the
+ * config HTTP API. `apply` never throws to the Host: every fallible step is
+ * guarded, failures are logged and surfaced via `initError`, and the API is
+ * registered even when the database is missing.
  *
  * @module index
  */
@@ -20,6 +21,8 @@ import { createRetriever } from "./lib/retrieval.js";
 import { createInjector } from "./lib/inject.js";
 import { createRecallState } from "./lib/recall-state.js";
 import { registerApi } from "./lib/api.js";
+import { createMemoryStore } from "./lib/memories.js";
+import { registerMemoryTools } from "./lib/memory-tools.js";
 
 /** Plugin row name. */
 export const name = "context-rag";
@@ -117,6 +120,19 @@ export function apply(ctx, config = {}) {
   let indexer = null;
   let retriever = null;
   let injector = null;
+  let memoryStore = null;
+
+  // Memory store: Markdown memories plus the memory_* tools. Independent of
+  // the index database (files are the source of truth) but needed by the
+  // indexer's memory scan and the agent tools; fail-open like the rest.
+  if (configStore) {
+    try {
+      memoryStore = createMemoryStore({ home: configStore.home, configStore, logger });
+    } catch (err) {
+      initError ??= `memory store: ${messageOf(err)}`;
+      logger.error(`[context-rag] failed to create memory store: ${initError}`);
+    }
+  }
 
   if (db) {
     try {
@@ -126,7 +142,7 @@ export function apply(ctx, config = {}) {
       logger.error(`[context-rag] failed to create capture: ${initError}`);
     }
     try {
-      indexer = createIndexer({ db, configStore, embeddings, logger, home: configStore.home });
+      indexer = createIndexer({ db, configStore, embeddings, logger, home: configStore.home, memoryStore });
     } catch (err) {
       initError = `indexer: ${messageOf(err)}`;
       logger.error(`[context-rag] failed to create indexer: ${initError}`);
@@ -200,5 +216,38 @@ export function apply(ctx, config = {}) {
     }
   } catch (err) {
     logger.error(`[context-rag] failed to register config API: ${messageOf(err)}`);
+  }
+
+  // Agent memory tools. Prefer injection so the tools only register once the
+  // host's `tools` service is available; the registration lifecycle is owned
+  // by `ctx.tools.register` itself. A missing tools service (or a fake ctx
+  // whose `inject` calls back immediately without `tools`) only disables the
+  // tools — it never affects the rest of the plugin. A missing index db or
+  // indexer is left to the tools to fail clearly at call time.
+  if (memoryStore) {
+    const memoryDeps = { memoryStore, db, indexer, configStore };
+    try {
+      if (typeof ctx.inject === "function") {
+        ctx.inject(["tools"], (toolsCtx) => {
+          try {
+            if (toolsCtx?.tools && typeof toolsCtx.tools.register === "function") {
+              registerMemoryTools(toolsCtx, memoryDeps);
+            } else {
+              logger.warn("[context-rag] tools service unavailable; memory tools not registered");
+            }
+          } catch (err) {
+            logger.warn(`[context-rag] failed to register memory tools: ${messageOf(err)}`);
+          }
+        });
+      } else if (ctx.tools && typeof ctx.tools.register === "function") {
+        registerMemoryTools(ctx, memoryDeps);
+      } else {
+        logger.warn("[context-rag] tools service unavailable; memory tools not registered");
+      }
+    } catch (err) {
+      logger.warn(`[context-rag] failed to register memory tools: ${messageOf(err)}`);
+    }
+  } else {
+    logger.warn("[context-rag] memory store unavailable; memory tools not registered");
   }
 }

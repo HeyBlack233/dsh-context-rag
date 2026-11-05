@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openIndexDatabase, vectorFromBlob, vectorToBlob } from "../lib/db.js";
 
 /**
@@ -44,6 +45,22 @@ function samplePair(overrides = {}) {
   };
 }
 
+/** @returns {object} A valid memory record. */
+function sampleMemory(overrides = {}) {
+  return {
+    pairId: "mem-1",
+    recordType: "memory",
+    memoryType: "workspace",
+    type: "note",
+    name: "Build command",
+    description: "How to build the project",
+    content: "Run `npm run build` from the repo root.",
+    cwd: "/work/project",
+    createdAt: 1_700_000_100_000,
+    ...overrides,
+  };
+}
+
 /** @returns {Float32Array} A small finite vector. */
 function vector(values) {
   return new Float32Array(values);
@@ -68,7 +85,7 @@ test("db: openIndexDatabase creates schema, indexes, and schema_version", async 
     .map((row) => row.name);
   assert.deepEqual(indexes, ["idx_pairs_cwd_created_at", "idx_pairs_model_dim"]);
 
-  assert.equal(db.metaGet("schema_version"), "1");
+  assert.equal(db.metaGet("schema_version"), "2");
   assert.equal(db.raw.prepare("SELECT COUNT(*) AS n FROM pairs").get().n, 0);
   assert.equal(db.raw.prepare("SELECT COUNT(*) AS n FROM outbox").get().n, 0);
   // Parent directory was created on demand.
@@ -90,7 +107,7 @@ test("db: openIndexDatabase is idempotent on an existing file", async (t) => {
   });
 
   assert.equal(reopened.metaGet("custom"), "value");
-  assert.equal(reopened.metaGet("schema_version"), "1");
+  assert.equal(reopened.metaGet("schema_version"), "2");
   assert.equal(reopened.stats().pairCount, 1);
 });
 
@@ -467,6 +484,320 @@ test("db: countCandidates counts matching pairs with an optional session filter"
   assert.throws(() => db.countCandidates({ scope: "all", model: "m1", dim: 0 }), RangeError);
 });
 
+// ---------------------------------------------------------------------------
+// Memories: migration, upsertMemory, and merged candidate queries.
+// ---------------------------------------------------------------------------
+
+test("db: openIndexDatabase migrates a pre-memory database non-destructively", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "dsh-db-test-"));
+  const file = join(dir, "index.db");
+  const old = new DatabaseSync(file);
+  old.exec(`
+    CREATE TABLE pairs (
+      pair_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      turn INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      user_text TEXT NOT NULL,
+      assistant_text TEXT NOT NULL,
+      text_hash TEXT NOT NULL,
+      embedding BLOB,
+      dim INTEGER,
+      model TEXT,
+      indexed_at INTEGER
+    );
+    CREATE TABLE outbox (
+      pair_id TEXT PRIMARY KEY,
+      reason TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_at INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
+    );
+    CREATE TABLE meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '1')").run();
+  old
+    .prepare(
+      `INSERT INTO pairs (pair_id, session_id, cwd, turn, created_at, user_text, assistant_text, text_hash)
+       VALUES ('legacy', 's', '/w', 1, 100, 'u', 'a', 'h')`,
+    )
+    .run();
+  old.close();
+
+  const db = openIndexDatabase(file);
+  t.after(async () => {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  assert.equal(db.metaGet("schema_version"), "2");
+  const columns = db.raw.prepare("PRAGMA table_info(pairs)").all().map((row) => row.name);
+  for (const name of ["record_type", "memory_type", "name", "description"]) {
+    assert.ok(columns.includes(name), `${name} must be added by the migration`);
+  }
+  // Existing rows are preserved and default to conversation pairs.
+  const legacy = db.getPair("legacy");
+  assert.equal(legacy.recordType, "pair");
+  assert.equal(legacy.userText, "u");
+  assert.equal(legacy.memoryType, null);
+  assert.equal(legacy.name, "");
+  assert.equal(db.stats().pairCount, 1);
+});
+
+test("db: upsertMemory inserts memories and enqueues reason 'new'", async (t) => {
+  const { db } = await makeDb(t);
+  const record = sampleMemory();
+  const returned = db.upsertMemory(record);
+  assert.deepEqual(returned, {
+    pairId: "mem-1",
+    memoryType: "workspace",
+    cwd: "/work/project",
+    createdAt: 1_700_000_100_000,
+    content: "Run `npm run build` from the repo root.",
+    name: "Build command",
+    description: "How to build the project",
+  });
+
+  const mem = db.getPair("mem-1");
+  assert.equal(mem.recordType, "memory");
+  assert.equal(mem.memoryType, "workspace");
+  assert.equal(mem.name, "Build command");
+  assert.equal(mem.description, "How to build the project");
+  assert.equal(mem.userText, record.content);
+  assert.equal(mem.assistantText, "");
+  assert.equal(mem.sessionId, "");
+  assert.equal(mem.turn, 0);
+  assert.equal(mem.cwd, "/work/project");
+  assert.equal(mem.vector, null);
+  assert.equal(mem.model, null);
+
+  const due = db.claimDue(Date.now(), 10);
+  assert.deepEqual(due, [{ pairId: "mem-1", attempts: 0, reason: "new" }]);
+});
+
+test("db: global memories are stored with an empty cwd", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertMemory(sampleMemory({ pairId: "g1", memoryType: "global", cwd: "/somewhere" }));
+  const mem = db.getPair("g1");
+  assert.equal(mem.memoryType, "global");
+  assert.equal(mem.cwd, "");
+});
+
+test("db: upsertMemory with same hash preserves embedding and refreshes metadata", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertMemory(sampleMemory());
+  db.setEmbedding("mem-1", vector([1, 2, 3]), { model: "m", dim: 3 });
+  const hashBefore = db.getPair("mem-1").textHash;
+
+  db.upsertMemory(sampleMemory({ name: "Renamed", createdAt: 2_000_000_000_000 }));
+  const mem = db.getPair("mem-1");
+
+  assert.equal(mem.textHash, hashBefore);
+  assert.equal(mem.name, "Renamed");
+  assert.equal(mem.createdAt, 2_000_000_000_000);
+  assert.deepEqual([...mem.vector], [1, 2, 3]);
+  assert.equal(mem.model, "m");
+  assert.equal(mem.dim, 3);
+  // No new outbox work.
+  assert.deepEqual(db.claimDue(Date.now(), 10), []);
+});
+
+test("db: upsertMemory with changed content clears embedding and enqueues 'text-changed'", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertMemory(sampleMemory());
+  db.setEmbedding("mem-1", vector([1, 2, 3]), { model: "m", dim: 3 });
+  const hashBefore = db.getPair("mem-1").textHash;
+
+  db.upsertMemory(sampleMemory({ content: "A totally different memory body." }));
+  const mem = db.getPair("mem-1");
+
+  assert.notEqual(mem.textHash, hashBefore);
+  assert.equal(mem.vector, null);
+  assert.equal(mem.model, null);
+  assert.equal(mem.dim, null);
+  assert.equal(mem.indexedAt, null);
+
+  const due = db.claimDue(Date.now(), 10);
+  assert.deepEqual(due, [{ pairId: "mem-1", attempts: 0, reason: "text-changed" }]);
+});
+
+test("db: upsertMemory validates its input", async (t) => {
+  const { db } = await makeDb(t);
+  assert.throws(() => db.upsertMemory(null), TypeError);
+  assert.throws(() => db.upsertMemory(sampleMemory({ pairId: "" })), TypeError);
+  assert.throws(() => db.upsertMemory(sampleMemory({ memoryType: "other" })), TypeError);
+  assert.throws(() => db.upsertMemory(sampleMemory({ content: 42 })), TypeError);
+  assert.throws(() => db.upsertMemory(sampleMemory({ createdAt: Number.NaN })), TypeError);
+  assert.equal(db.stats().pairCount, 0);
+});
+
+test("db: candidates merge memories with pairs; memories ignore scope and session exclusion", async (t) => {
+  const { db } = await makeDb(t);
+  const now = 1_700_000_000_000;
+  // A pair in /w1 (session-1), a workspace memory in /w1, a workspace memory
+  // in /w2, and a global memory.
+  db.upsertPair(samplePair({ pairId: "p1", sessionId: "session-1", cwd: "/w1", turn: 0, createdAt: now }));
+  db.upsertMemory(sampleMemory({ pairId: "m-w1", memoryType: "workspace", cwd: "/w1", name: "W1 note", createdAt: now + 100 }));
+  db.upsertMemory(sampleMemory({ pairId: "m-w2", memoryType: "workspace", cwd: "/w2", name: "W2 note", createdAt: now + 200 }));
+  db.upsertMemory(sampleMemory({ pairId: "m-global", memoryType: "global", cwd: "", name: "Global note", createdAt: now + 300 }));
+  for (const pairId of ["p1", "m-w1", "m-w2", "m-global"]) {
+    db.setEmbedding(pairId, vector([1, 2, 3]), { model: "m1", dim: 3 });
+  }
+
+  // Workspace scope from /w1: the /w1 pair, the /w1 memory, and the global
+  // memory, ordered by created_at across both kinds.
+  const ws = db.candidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(
+    ws.map((c) => c.pairId),
+    ["m-global", "m-w1", "p1"],
+  );
+
+  // Memories carry their metadata; pairs keep recordType 'pair'.
+  const global = ws.find((c) => c.pairId === "m-global");
+  assert.equal(global.recordType, "memory");
+  assert.equal(global.memoryType, "global");
+  assert.equal(global.name, "Global note");
+  assert.equal(global.userText, "Run `npm run build` from the repo root.");
+  assert.equal(global.assistantText, "");
+  assert.equal(global.sessionId, "");
+  assert.equal(global.turn, 0);
+  const pair = ws.find((c) => c.pairId === "p1");
+  assert.equal(pair.recordType, "pair");
+  assert.equal(pair.memoryType, null);
+  assert.equal(pair.name, "");
+
+  // Scope "all" from /w1 still limits workspace memories to the exact cwd.
+  const all = db.candidates({ scope: "all", cwd: "/w1", model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(
+    all.map((c) => c.pairId),
+    ["m-global", "m-w1", "p1"],
+  );
+
+  // A different cwd excludes the /w1 memory; scope all still keeps every pair.
+  const other = db.candidates({ scope: "all", cwd: "/w2", model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(
+    other.map((c) => c.pairId),
+    ["m-global", "m-w2", "p1"],
+  );
+
+  // excludeSessionId removes the pair but never the memories.
+  const excluded = db.candidates({
+    scope: "workspace",
+    cwd: "/w1",
+    model: "m1",
+    dim: 3,
+    limit: 10,
+    excludeSessionId: "session-1",
+  });
+  assert.deepEqual(
+    excluded.map((c) => c.pairId),
+    ["m-global", "m-w1"],
+  );
+
+  // Unified LIMIT applies across both kinds.
+  const limited = db.candidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, limit: 2 });
+  assert.deepEqual(
+    limited.map((c) => c.pairId),
+    ["m-global", "m-w1"],
+  );
+
+  // Unindexed memories never appear.
+  db.upsertMemory(sampleMemory({ pairId: "m-unindexed", memoryType: "workspace", cwd: "/w1" }));
+  const ids = db.candidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, limit: 10 }).map((c) => c.pairId);
+  assert.ok(!ids.includes("m-unindexed"));
+});
+
+test("db: candidates without a cwd only surface global memories under scope all", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertMemory(sampleMemory({ pairId: "m-w1", memoryType: "workspace", cwd: "/w1" }));
+  db.upsertMemory(sampleMemory({ pairId: "m-global", memoryType: "global", cwd: "" }));
+  for (const pairId of ["m-w1", "m-global"]) {
+    db.setEmbedding(pairId, vector([1]), { model: "m1", dim: 1 });
+  }
+  const all = db.candidates({ scope: "all", model: "m1", dim: 1, limit: 10 });
+  assert.deepEqual(all.map((c) => c.pairId), ["m-global"]);
+});
+
+test("db: countCandidates counts memories in the general pool but only pairs per session", async (t) => {
+  const { db } = await makeDb(t);
+  const now = 1_700_000_000_000;
+  db.upsertPair(samplePair({ pairId: "p1", sessionId: "session-1", cwd: "/w1", turn: 0, createdAt: now }));
+  db.upsertMemory(sampleMemory({ pairId: "m-w1", memoryType: "workspace", cwd: "/w1", createdAt: now + 100 }));
+  db.upsertMemory(sampleMemory({ pairId: "m-global", memoryType: "global", cwd: "", createdAt: now + 200 }));
+  for (const pairId of ["p1", "m-w1", "m-global"]) {
+    db.setEmbedding(pairId, vector([1]), { model: "m1", dim: 1 });
+  }
+
+  // The general workspace count includes the pair and both memories.
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 1 }), 3);
+  assert.equal(db.countCandidates({ scope: "all", cwd: "/w1", model: "m1", dim: 1 }), 3);
+
+  // Same-session statistics stay conversation-only: p1 only.
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 1, sessionId: "session-1" }), 1);
+  // An unknown session contributes no conversations even though memories exist.
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 1, sessionId: "nope" }), 0);
+});
+
+test("db: reconcile drops unseen memories alongside unseen pairs", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1" }));
+  db.upsertMemory(sampleMemory({ pairId: "m1" }));
+  db.upsertMemory(sampleMemory({ pairId: "m2" }));
+
+  db.beginReconcile();
+  db.markSeen("p1");
+  db.markSeen("m1");
+  const counts = db.finishReconcile();
+
+  assert.deepEqual(counts, { pairsDeleted: 1, outboxDeleted: 1 });
+  assert.equal(db.getPair("p1") !== null, true);
+  assert.equal(db.getPair("m1") !== null, true);
+  assert.equal(db.getPair("m2"), null);
+});
+
+test("db: deletePair removes memory rows too", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertMemory(sampleMemory({ pairId: "m1" }));
+  db.upsertMemory(sampleMemory({ pairId: "m2" }));
+
+  assert.equal(db.deletePair("m1"), true);
+  assert.equal(db.getPair("m1"), null);
+  assert.equal(db.getPair("m2") !== null, true);
+  assert.equal(db.deletePair("m1"), false); // already gone
+  assert.equal(db.stats().pendingCount, 1);
+});
+
+test("db: stats and reindexAll cover memories alongside pairs", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1" }));
+  db.upsertMemory(sampleMemory({ pairId: "m1" }));
+  db.setEmbedding("p1", vector([1]), { model: "m1", dim: 1 });
+  db.setEmbedding("m1", vector([2]), { model: "m1", dim: 1 });
+
+  const stats = db.stats();
+  assert.equal(stats.pairCount, 2);
+  assert.equal(stats.indexedCount, 2);
+  assert.equal(stats.pendingCount, 0);
+  assert.equal(stats.errorCount, 0);
+  assert.equal(stats.model, "m1");
+  assert.equal(stats.dim, 1);
+
+  const reindexed = db.reindexAll();
+  assert.deepEqual(reindexed, { queued: 2 });
+  assert.equal(db.getPair("m1").vector, null);
+  assert.equal(db.stats().indexedCount, 0);
+  assert.equal(db.stats().pendingCount, 2);
+  const due = db.claimDue(Date.now(), 10);
+  assert.deepEqual(
+    due.map((row) => row.pairId).sort(),
+    ["m1", "p1"],
+  );
+});
+
 test("db: metaGet/metaSet round-trip and overwrite", async (t) => {
   const { db } = await makeDb(t);
   assert.equal(db.metaGet("missing"), null);
@@ -474,7 +805,7 @@ test("db: metaGet/metaSet round-trip and overwrite", async (t) => {
   assert.equal(db.metaGet("key"), "v1");
   assert.equal(db.metaSet("key", "v2"), "v2");
   assert.equal(db.metaGet("key"), "v2");
-  assert.equal(db.metaGet("schema_version"), "1");
+  assert.equal(db.metaGet("schema_version"), "2");
 });
 
 test("db: clearIndex drops embeddings and outbox but keeps meta", async (t) => {
@@ -492,7 +823,7 @@ test("db: clearIndex drops embeddings and outbox but keeps meta", async (t) => {
   assert.equal(db.stats().indexedCount, 0);
   assert.equal(db.stats().pendingCount, 0);
   assert.equal(db.metaGet("custom"), "keep");
-  assert.equal(db.metaGet("schema_version"), "1");
+  assert.equal(db.metaGet("schema_version"), "2");
   assert.equal(db.stats().pairCount, 2);
 });
 

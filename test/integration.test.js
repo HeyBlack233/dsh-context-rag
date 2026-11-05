@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { apply } from "../index.js";
 import { createConfigStore } from "../lib/config.js";
 import { openIndexDatabase } from "../lib/db.js";
@@ -21,6 +21,8 @@ import { createIndexer } from "../lib/indexer.js";
 import { createRetriever } from "../lib/retrieval.js";
 import { createInjector } from "../lib/inject.js";
 import { createRecallState } from "../lib/recall-state.js";
+import { createMemoryStore } from "../lib/memories.js";
+import { workspaceSlug } from "../lib/paths.js";
 import { renderInjection } from "../lib/render.js";
 import { readPairs } from "../lib/pairs.js";
 import { makeTempDir, cleanupTempDir } from "./helpers/tmp.js";
@@ -158,15 +160,20 @@ function captureTurn(capture, session, { turn, userText, userId, assistantText, 
  * Stand up a real end-to-end pipeline in a fresh temporary home:
  * config store + real SQLite index DB + capture + indexer + retriever +
  * injector (attached to a fake ctx) + a real recall-state store persisted
- * under `<home>/recall-state.json`. Cleanup is registered on `t.after`.
+ * under `<home>/recall-state.json`. With `withMemoryStore`, a real memory
+ * store (see `lib/memories.js`) is created under `<home>/memories` and wired
+ * into the indexer so reconciliation also syncs memories. Cleanup is
+ * registered on `t.after`.
  *
  * @param {import("node:test").TestContext} t
  * @param {object} [options]
  * @param {object} [options.patch] - Config patch applied via `configStore.save`.
  * @param {object|null} [options.reranker] - Optional fake rerank client.
+ * @param {boolean} [options.withMemoryStore] - When true, create and wire a
+ *   real `createMemoryStore` into the indexer.
  * @returns {Promise<object>} The assembled pipeline pieces.
  */
-async function makePipeline(t, { patch = {}, reranker = null } = {}) {
+async function makePipeline(t, { patch = {}, reranker = null, withMemoryStore = false } = {}) {
   const home = await makeTempDir("dsh-rag-int-");
   const configStore = createConfigStore({ home });
   configStore.save({
@@ -186,7 +193,16 @@ async function makePipeline(t, { patch = {}, reranker = null } = {}) {
   const db = openIndexDatabase(path.join(home, "index.sqlite"));
   const embeddings = makeEmbeddings();
   const capture = createCapture({ db, configStore });
-  const indexer = createIndexer({ db, configStore, embeddings, home });
+  const memoryStore = withMemoryStore
+    ? createMemoryStore({ home, configStore })
+    : null;
+  const indexer = createIndexer({
+    db,
+    configStore,
+    embeddings,
+    home,
+    ...(memoryStore ? { memoryStore } : {}),
+  });
   const recallState = createRecallState({
     file: path.join(home, "recall-state.json"),
   });
@@ -211,7 +227,19 @@ async function makePipeline(t, { patch = {}, reranker = null } = {}) {
     await cleanupTempDir(home);
   });
 
-  return { home, configStore, db, capture, indexer, retriever, injector, injectorCtx, embeddings, recallState };
+  return {
+    home,
+    configStore,
+    db,
+    capture,
+    indexer,
+    retriever,
+    injector,
+    injectorCtx,
+    embeddings,
+    recallState,
+    ...(memoryStore ? { memoryStore } : {}),
+  };
 }
 
 /** Collect the pair records currently on disk under a home directory. */
@@ -666,4 +694,208 @@ test("renderInjection never exceeds maxChars and truncates oversized entries", (
   assert.ok(rendered.text.includes("Context RAG:"), "rendered text must include the header");
   assert.ok(rendered.text.includes("…[truncated]…"), "oversized entries must be truncated");
   assert.ok(rendered.summary.includes("Retrieved"));
+});
+
+// ---------------------------------------------------------------------------
+// Test 7: memories end-to-end (real memory store + SQLite + indexer +
+// retriever + injector). These exercise the shared embedding/outbox pipeline:
+// reconcile syncs scanned memories, pumpOnce embeds them, and recall merges
+// global + current-workspace memories with conversation pairs regardless of
+// `retrieval.scope`, while other-workspace memories stay out.
+// ---------------------------------------------------------------------------
+
+test("memories: global + current workspace memories embed and recall; other workspaces stay out", async (t) => {
+  const { db, configStore, capture, indexer, retriever, injectorCtx, memoryStore } = await makePipeline(t, {
+    patch: { retrieval: { allowSameSession: true, topK: 10, candidateLimit: 10 } },
+    withMemoryStore: true,
+  });
+
+  // One conversation pair in /tmp/work, plus memories in global, the current
+  // workspace (/tmp/work), and another workspace (/tmp/other).
+  const session = { id: "sess-mem", header: { cwd: "/tmp/work" } };
+  captureTurn(capture, session, {
+    turn: 1,
+    userText: "alpha question",
+    userId: "u1",
+    assistantText: "alpha answer",
+    assistantId: "a1",
+  });
+  await capture.stopping({ session }, 1);
+
+  const global = memoryStore.write({
+    type: "global",
+    name: "global-note",
+    description: "Global preference",
+    content: "alpha global memory content",
+  });
+  const work = memoryStore.write({
+    type: "workspace",
+    cwd: "/tmp/work",
+    name: "work-note",
+    description: "Work note",
+    content: "alpha work memory content",
+  });
+  const other = memoryStore.write({
+    type: "workspace",
+    cwd: "/tmp/other",
+    name: "other-note",
+    description: "Other note",
+    content: "alpha other memory content",
+  });
+
+  // Reconcile syncs the pair and the scanned memories, then pumpOnce embeds
+  // them through the shared outbox.
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 4, "pair + 3 memories must all be indexed");
+
+  // Workspace scope from /tmp/work: the pair, the global memory, and the
+  // /tmp/work memory are candidates; the /tmp/other memory is not.
+  const res = await retriever.retrieve({ query: "alpha", cwd: "/tmp/work" });
+  assert.equal(res.stats.candidateCount, 3, "pair + global memory + current-workspace memory");
+  const ids = new Set(res.pairs.map((p) => p.pairId));
+  assert.ok(ids.has(global.record.pairId), "the global memory must be recalled");
+  assert.ok(ids.has(work.record.pairId), "the current-workspace memory must be recalled");
+  assert.ok(!ids.has(other.record.pairId), "the other-workspace memory must not be recalled");
+
+  // scope=all keeps memory scoping to global + the current cwd.
+  configStore.save({ retrieval: { scope: "all" } });
+  const all = await retriever.retrieve({ query: "alpha", cwd: "/tmp/work" });
+  assert.equal(all.stats.candidateCount, 3);
+  const allIds = new Set(all.pairs.map((p) => p.pairId));
+  assert.ok(allIds.has(global.record.pairId));
+  assert.ok(allIds.has(work.record.pairId));
+  assert.ok(!allIds.has(other.record.pairId), "scope=all must not pull in the other-workspace memory");
+
+  // End-to-end injection renders the memories as `Memory · global|workspace`
+  // entries alongside the conversation pair.
+  const decision = await emitInjection(injectorCtx, session, 2, "alpha follow up", "u-mem");
+  const added = decision.messages.filter((m) => m.source?.kind === "context-rag");
+  assert.equal(added.length, 1, "memories must be injectable through the pre-step hook");
+  assert.ok(added[0].content[0].text.includes("Memory · global"), "the global memory entry must be rendered");
+  assert.ok(added[0].content[0].text.includes("Memory · workspace"), "the workspace memory entry must be rendered");
+  assert.ok(added[0].content[0].text.includes("alpha global memory content"));
+  assert.ok(added[0].content[0].text.includes("alpha work memory content"));
+});
+
+test("memories: deleting the index row (tool flow) stops recall immediately", async (t) => {
+  const { db, indexer, retriever, memoryStore } = await makePipeline(t, {
+    patch: { retrieval: { allowSameSession: true, topK: 10, candidateLimit: 10 } },
+    withMemoryStore: true,
+  });
+
+  const work = memoryStore.write({
+    type: "workspace",
+    cwd: "/tmp/work",
+    name: "work-note",
+    description: "Work note",
+    content: "alpha work memory content",
+  });
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 1);
+
+  const before = await retriever.retrieve({ query: "alpha", cwd: "/tmp/work" });
+  assert.ok(
+    before.pairs.some((p) => p.pairId === work.record.pairId),
+    "the memory must be recalled before deletion",
+  );
+
+  // The memory_forget tool flow: remove from the store, then drop the index
+  // row via db.deletePair.
+  const removed = memoryStore.remove({
+    type: "workspace",
+    cwd: "/tmp/work",
+    name: "work-note",
+    description: "Work note",
+  });
+  assert.ok(removed, "remove() must report the removed record");
+  assert.equal(db.deletePair(removed.record.pairId), true);
+  assert.equal(db.getPair(removed.record.pairId), null);
+
+  const after = await retriever.retrieve({ query: "alpha", cwd: "/tmp/work" });
+  assert.equal(after.stats.candidateCount, 0);
+  assert.ok(
+    !after.pairs.some((p) => p.pairId === work.record.pairId),
+    "the deleted memory must no longer be recalled",
+  );
+});
+
+test("memories: reconcile picks up manual file edits and drops manually deleted/forgotten files", async (t) => {
+  const { db, indexer, retriever, memoryStore, home } = await makePipeline(t, {
+    patch: { retrieval: { allowSameSession: true, topK: 10, candidateLimit: 10 } },
+    withMemoryStore: true,
+  });
+
+  const edit = memoryStore.write({
+    type: "workspace",
+    cwd: "/tmp/work",
+    name: "edit-note",
+    description: "Edit note",
+    content: "alpha original",
+  });
+  const gone = memoryStore.write({
+    type: "global",
+    name: "gone-note",
+    description: "Gone note",
+    content: "alpha gone",
+  });
+  const forgot = memoryStore.write({
+    type: "global",
+    name: "forgot-note",
+    description: "Forgot note",
+    content: "alpha forgot",
+  });
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 3);
+
+  // Manual edit: rewrite the body on disk directly, keeping the front matter.
+  const editFile = path.join(
+    home,
+    "memories",
+    "workspaces",
+    workspaceSlug("/tmp/work"),
+    "edit-note.md",
+  );
+  await writeFile(
+    editFile,
+    `---\n${JSON.stringify({
+      name: "edit-note",
+      description: "Edit note",
+      type: "workspace",
+      createdAt: edit.record.createdAt,
+      cwd: "/tmp/work",
+    })}\n---\nalpha edited body`,
+  );
+
+  // Manual delete and manual "forget" (rename to .forgotten).
+  await rm(path.join(home, "memories", "global", "gone-note.md"));
+  await rename(
+    path.join(home, "memories", "global", "forgot-note.md"),
+    path.join(home, "memories", "global", "forgot-note.forgotten"),
+  );
+
+  // Reconcile syncs the file-system state.
+  await indexer.reconcile();
+
+  // The edited memory is refreshed: its content changed, so the stale
+  // embedding is cleared and re-computed on the next pump.
+  const edited = db.getPair(edit.record.pairId);
+  assert.equal(edited.userText, "alpha edited body");
+  assert.equal(edited.vector, null, "a content change must clear the stale embedding");
+  await indexer.pumpOnce();
+  assert.notEqual(db.getPair(edit.record.pairId).vector, null, "the new content must be re-embedded");
+
+  // The manually deleted and forgotten memories are no longer indexed.
+  assert.equal(db.getPair(gone.record.pairId), null, "the deleted memory row must be gone");
+  assert.equal(db.getPair(forgot.record.pairId), null, "the forgotten memory row must be gone");
+  assert.equal(db.stats().indexedCount, 1);
+
+  // Only the edited memory is recalled.
+  const res = await retriever.retrieve({ query: "alpha", cwd: "/tmp/work" });
+  const ids = new Set(res.pairs.map((p) => p.pairId));
+  assert.ok(ids.has(edit.record.pairId));
+  assert.ok(!ids.has(gone.record.pairId));
+  assert.ok(!ids.has(forgot.record.pairId));
 });

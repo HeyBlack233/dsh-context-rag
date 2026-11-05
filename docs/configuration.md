@@ -19,8 +19,8 @@ configured.
 | `dimensions` | `null` | Expected vector dimensionality; used to validate candidates. |
 | `timeoutMs` | `3000` | Embedding request timeout. |
 | `maxRetries` | `2` | Embedding retry count before the worker gives up. |
-| `batchSize` | `16` | Pairs embedded per worker batch. |
-| `maxEmbeddingChars` | `8000` | Text truncated to this length before embedding. |
+| `batchSize` | `16` | Records (pairs and memories) embedded per worker batch. |
+| `maxEmbeddingChars` | `8000` | Text truncated to this length before embedding; doubles as the hard cap on memory `content` length (see [storage-and-data-model.md](storage-and-data-model.md)). |
 
 ## Rerank
 
@@ -79,14 +79,27 @@ from `-1` to `10000`; `dedupeStateRetentionDays` is an integer from `0` to
 | --- | --- | --- |
 | `enabled` | `true` | Master switch for the background indexing worker. |
 | `retryDelayMs` | `2000` | Backoff delay between embedding retry attempts. |
-| `maxAttempts` | `8` | Max attempts before a pair is dropped from the outbox. |
+| `maxAttempts` | `8` | Max attempts before a record is dropped from the outbox. |
 | `pollIntervalMs` | `1000` | Worker polling interval for the outbox. |
+
+## Memory
+
+There are **no memory-specific settings**. Memory recall reuses the retrieval
+and embedding pipeline unchanged: `scanLimit`, `candidateLimit`, `topK`,
+`minScore`, `rerankMinScore`, `maxContextChars`, `timeoutMs`, `dedupeTurns`,
+and the rerank configuration apply to memory candidates exactly as they do to
+conversation pairs (see
+[retrieval-and-injection.md](retrieval-and-injection.md)). Memories are always
+recalled from `global` plus the current workspace, regardless of
+`retrieval.scope`. `embedding.maxEmbeddingChars` doubles as the hard limit on
+memory `content` length (see
+[storage-and-data-model.md](storage-and-data-model.md)).
 
 ## Home directory
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `home` | `$DSH_HOME/context-rag/` | Root directory for `config.json`, `pairs/`, `index.sqlite`, and `recall-state.json`. |
+| `home` | `$DSH_HOME/context-rag/` | Root directory for `config.json`, `pairs/`, `memories/`, `index.sqlite`, and `recall-state.json`. |
 
 ## Editing and safety
 
@@ -94,7 +107,8 @@ from `-1` to `10000`; `dedupeStateRetentionDays` is an integer from `0` to
 - **API keys are never returned to the browser.** The config page can set them,
   but reads back redacted values.
 - The SQLite index is rebuildable: deleting `index.sqlite` is safe and it is
-  rebuilt from the JSONL pair log on the next startup reconcile.
+  rebuilt from the JSONL pair log and the memory files on the next startup
+  reconcile.
 - `recall-state.json` is a separate, disposable file: deleting it only resets
   dedupe history. The JSONL log and the index are unaffected.
 

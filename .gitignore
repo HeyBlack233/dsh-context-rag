@@ -1,7 +1,8 @@
 # Dependencies
 node_modules/
 
-# Lockfiles (no dependencies are declared in this plugin)
+# Lockfiles (dependency management is delegated to the DSH host; only
+# @deepseek-ai/dsh-tools is declared, as peer + dev dependency)
 package-lock.json
 npm-shrinkwrap.json
 yarn.lock

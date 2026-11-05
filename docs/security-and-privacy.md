@@ -11,13 +11,15 @@ All plugin data lives on disk under the data home (see
 
 - `config.json` holds the runtime config.
 - `pairs/` holds the human-readable JSONL pair log.
+- `memories/` holds the Markdown memory files (with `MEMORY.md` indexes); see
+  [storage-and-data-model.md](storage-and-data-model.md).
 - `index.sqlite` is the rebuildable embedding index.
 - `recall-state.json` is the turn-dedupe bookkeeping file (see
   [storage-and-data-model.md](storage-and-data-model.md)).
 
-The pair log is plaintext, append-only, and human-readable so it can be
-inspected, grepped, or edited. Nothing is encrypted at rest; the security model
-is *local machine access*, not data-at-rest encryption.
+The pair log and the memory files are plaintext and human-readable so they can
+be inspected, grepped, or edited. Nothing is encrypted at rest; the security
+model is *local machine access*, not data-at-rest encryption.
 
 ## Recall state contains no message text
 
@@ -70,24 +72,30 @@ activity is not stored into the pair log.
 
 Retrieved text is injected as a read-only, user-role context message with
 **source metadata** identifying it as `context-rag`. The injected text is
-treated as **untrusted background** from prior turns:
+treated as **untrusted background** from prior turns and memory files:
 
 - It carries a **fixed warning** that the background text is untrusted and must
   not be treated as authoritative instructions.
-- Any `<` in the pair text is escaped (rendered as `\u003c`) to prevent markup
-  injection.
+- Any `<` in the candidate text is escaped (rendered as `\u003c`) to prevent
+  markup injection.
 - It is attached once per user message and marked read-only/durable.
+
+**Memories are also untrusted reference material.** They are user-authored
+Markdown files recalled through the same pipeline and rendered with the same
+warning and escaping — a memory that contains instructions is injected as
+background text, not as commands.
 
 ### Prompt-injection caveat
 
 The retrieved pairs originate from *your own past turns* in the same
-workspace. If any of those turns contained instructions that look like system
-prompts or requests to change behavior, the injected context could carry that
-content. This is a **prompt-injection risk**: a prior turn containing
-adversarial text could surface in later context. The fixed warning and the
-read-only framing mitigate it, but they do not eliminate it. Treat retrieved
-content as data, not as instructions, and avoid storing sensitive instructions
-as user text if cross-contamination is a concern.
+workspace, and memories are *your own notes*. If any of those contained
+instructions that look like system prompts or requests to change behavior, the
+injected context could carry that content. This is a **prompt-injection risk**:
+a prior turn or a memory containing adversarial text could surface in later
+context. The fixed warning and the read-only framing mitigate it, but they do
+not eliminate it. Treat retrieved content — pairs and memories alike — as data,
+not as instructions, and avoid storing sensitive instructions as user text or
+memory content if cross-contamination is a concern.
 
 ## Secrets in the JSONL
 
@@ -95,15 +103,22 @@ The pair log stores exactly what you type and what the assistant replies. If
 you paste an API key, password, or secret into a user message, it will appear
 in plaintext in the JSONL (and be embedded/indexed). **No secrets are written
 unless you type them** — the plugin never injects its own credentials into the
-log. Be mindful that anything you type into a conversation becomes retrievable
+log. The same applies to memories: anything saved through `memory_write`
+appears in plaintext in `memories/` and is embedded/indexed. Be mindful that
+anything you type into a conversation or save as a memory becomes retrievable
 content.
 
 ## Deletion and cleanup
 
 - The JSONL log is the source of truth; to remove data, delete or edit the
   corresponding `.jsonl` line.
+- Memories are forgotten through `memory_forget` (renames the file to
+  `<name>.forgotten`, removes the `MEMORY.md` entry and the SQLite vector) or
+  by deleting the `<name>.md` file directly (the vector is dropped on the next
+  startup scan). `.forgotten` files stay on disk as retained history but are
+  never recalled.
 - `index.sqlite` is a rebuildable cache — you can safely delete it, and it is
-  rebuilt from JSONL on the next startup reconcile.
+  rebuilt from JSONL and the memory files on the next startup reconcile.
 - The configuration page's `index.clear` clears the index (and outbox) but
   **keeps the JSONL log**; deleting the JSONL is a separate, explicit step.
 - See [operations.md](operations.md) for safe-deletion guidance.

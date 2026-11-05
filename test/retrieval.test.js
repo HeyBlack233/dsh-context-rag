@@ -686,3 +686,102 @@ test("reports filter counts in stats and lastRetrieval", async () => {
   assert.equal(last.dedupeApplied, true);
   assert.equal(last.scope, "workspace");
 });
+
+// ---------------------------------------------------------------------------
+// Memories: content-based rerank docs and pairId-keyed dedupe.
+// ---------------------------------------------------------------------------
+
+test("builds rerank documents from content alone for memory candidates", async () => {
+  const candidates = [
+    { pairId: "mem-1", recordType: "memory", memoryType: "global", name: "Note", userText: "memory body text", assistantText: "", vector: [1, 0, 0, 0] },
+    { pairId: "pair-1", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+  ];
+  const calls = [];
+  const reranker = {
+    async rerank({ query, documents, topN }) {
+      calls.push({ documents, topN });
+      return {
+        results: documents.map((doc, index) => ({ index, document: doc, score: 1 - index * 0.1 })),
+        model: "r",
+      };
+    },
+  };
+  const retriever = makeRetriever({
+    config: makeConfig({ rerank: { enabled: true, model: "r" }, retrieval: { ...makeConfig().retrieval, minScore: 0, topK: 2, candidateLimit: 10 } }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    reranker,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x" });
+  assert.equal(result.stats.reranked, true);
+  assert.deepEqual(calls[0].documents, ["memory body text", "User:\na\n\nAssistant:\nA"]);
+  assert.equal(calls[0].topN, 2);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["mem-1", "pair-1"]);
+});
+
+test("memory candidates share cosine threshold and topK with pairs", async () => {
+  const candidates = [
+    { pairId: "mem-low", recordType: "memory", memoryType: "global", name: "n", userText: "low", vector: [0.05, 0, 0, 0] },
+    { pairId: "mem-high", recordType: "memory", memoryType: "workspace", name: "n", userText: "high", vector: [1, 0, 0, 0] },
+    { pairId: "pair-high", userText: "p", assistantText: "P", vector: [0.9, 0, 0, 0] },
+  ];
+  const retriever = makeRetriever({
+    config: makeConfig({ retrieval: { ...makeConfig().retrieval, minScore: 0.1, topK: 2, candidateLimit: 10 } }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x" });
+  assert.equal(result.stats.candidateCount, 3);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["mem-high", "pair-high"]);
+  assert.ok(result.pairs.every((p) => p.score >= 0.1));
+});
+
+test("turn dedupe applies to memory pairIds like pairs", async () => {
+  const recorded = new Set(["mem-recent"]);
+  const recallState = {
+    isEligible({ pairId }) {
+      return !recorded.has(pairId);
+    },
+  };
+  const candidates = [
+    { pairId: "mem-recent", recordType: "memory", memoryType: "global", name: "n", userText: "a", vector: [1, 0, 0, 0] },
+    { pairId: "mem-fresh", recordType: "memory", memoryType: "global", name: "n", userText: "b", vector: [1, 0, 0, 0] },
+  ];
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    recallState,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 3, mode: "injection" });
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["mem-fresh"]);
+  assert.equal(result.stats.excludedDedupe, 1);
+  assert.equal(result.stats.dedupeApplied, true);
+});
+
+test("same-session exclusion stats count conversations only, memories stay eligible", async () => {
+  const candidates = [
+    { pairId: "mem-1", recordType: "memory", memoryType: "global", name: "n", userText: "a", vector: [1, 0, 0, 0] },
+    { pairId: "pair-other", userText: "b", assistantText: "B", vector: [1, 0, 0, 0] },
+  ];
+  const db = makeDb(
+    (args) => {
+      assert.equal(args.excludeSessionId, "session-x");
+      return candidates;
+    },
+    async () => 2,
+  );
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db,
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "session-x" });
+  assert.equal(result.stats.excludedSameSession, 2);
+  assert.equal(result.stats.candidateCount, 2);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["mem-1", "pair-other"]);
+});
