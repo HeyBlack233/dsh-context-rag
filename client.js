@@ -237,12 +237,14 @@ window.__ModuleLoader__.load({
             el("option", { value: "all" }, t("scopeAll"))));
 
       // One card per configuration category, so embedding, rerank, retrieval,
-      // and indexing settings stay visually separate.
-      const formCard = (titleKey, rows, { hint = false } = {}) =>
+      // and indexing settings stay visually separate. `help` is an optional
+      // translation key rendered as a help paragraph below the form rows.
+      const formCard = (titleKey, rows, { hint = false, help } = {}) =>
         el("div", { className: "dscr-card" },
           el("h2", { className: "dscr-title" }, t(titleKey)),
           hint && !parsedConfig() ? el("p", { className: "dscr-help" }, t("invalidJsonHint")) : null,
-          el("div", { className: "dscr-form" }, ...rows));
+          el("div", { className: "dscr-form" }, ...rows),
+          help ? el("p", { className: "dscr-help" }, t(help)) : null);
 
       const settingsCards = [
         formCard("embeddingTitle", [
@@ -265,6 +267,7 @@ window.__ModuleLoader__.load({
         ]),
         formCard("retrievalTitle", [
           checkRow("injectionEnabled", "retrieval.injectionEnabled"),
+          checkRow("allowSameSession", "retrieval.allowSameSession"),
           scopeRow,
           numRow("candidateLimit", "retrieval.candidateLimit", { int: true }),
           numRow("topK", "retrieval.topK", { int: true }),
@@ -272,7 +275,10 @@ window.__ModuleLoader__.load({
           numRow("rerankMinScore", "retrieval.rerankMinScore", { step: 0.01, min: 0, max: 1, fixed: 2 }),
           numRow("maxContextChars", "retrieval.maxContextChars", { int: true }),
           numRow("timeoutMs", "retrieval.timeoutMs", { int: true }),
-        ]),
+          numRow("dedupeTurns", "retrieval.dedupeTurns", { int: true, min: -1 }),
+          numRow("dedupeStateRetentionDays", "retrieval.dedupeStateRetentionDays", { int: true, min: 0 }),
+          numRow("dedupeStateMaxSessions", "retrieval.dedupeStateMaxSessions", { int: true, min: 0 }),
+        ], { help: "dedupeHelp" }),
         formCard("indexingTitle", [
           checkRow("indexingEnabled", "indexing.enabled"),
           numRow("pollIntervalMs", "indexing.pollIntervalMs", { int: true }),
@@ -330,7 +336,10 @@ window.__ModuleLoader__.load({
         maxEmbeddingChars: "Max embedding chars",
         rerankEnabled: "Rerank enabled", rerankBaseUrl: "Rerank base URL", rerankModel: "Rerank model", rerankPath: "Rerank path",
         injectionEnabled: "Inject context", scope: "Scope", scopeWorkspace: "Workspace", scopeAll: "All",
+        allowSameSession: "Allow same-session recall", dedupeTurns: "Dedupe turns",
+        dedupeStateRetentionDays: "Recall-state retention (days)", dedupeStateMaxSessions: "Recall-state max sessions",
         candidateLimit: "Candidate limit", topK: "Top K", minScore: "Min cosine score", rerankMinScore: "Min rerank score", maxContextChars: "Max context chars",
+        dedupeHelp: "Dedupe turns: 5 default; 0 disables turn dedupe; -1 allows each pair only once per session. Retention values of 0 disable that limit.",
         indexingEnabled: "Indexing enabled", pollIntervalMs: "Poll interval (ms)", retryDelayMs: "Retry delay (ms)", maxAttempts: "Max attempts",
         configHelp: "Edit the JSON directly. API keys are write-only: add a string \"apiKey\" field (e.g. embedding.apiKey) to set one; it is sent to the server and never shown again (apiKeySet / apiKeyPreview only indicate whether a key is set).",
         reload: "Reload", save: "Save", testEmbedding: "Test embedding", testRerank: "Test rerank",
@@ -353,7 +362,10 @@ window.__ModuleLoader__.load({
         maxEmbeddingChars: "最大嵌入字符数",
         rerankEnabled: "启用重排", rerankBaseUrl: "重排接口地址", rerankModel: "重排模型", rerankPath: "重排路径",
         injectionEnabled: "注入上下文", scope: "检索范围", scopeWorkspace: "当前工作区", scopeAll: "全部工作区",
+        allowSameSession: "允许同会话召回", dedupeTurns: "去重轮次",
+        dedupeStateRetentionDays: "召回状态保留天数", dedupeStateMaxSessions: "召回状态最大会话数",
         candidateLimit: "候选数量", topK: "最终条数", minScore: "余弦最低分", rerankMinScore: "重排最低分", maxContextChars: "上下文字符上限",
+        dedupeHelp: "去重轮次：默认 5；设为 0 禁用轮次去重；设为 -1 表示每条记录在每个会话中仅召回一次。保留值为 0 表示不限制。",
         indexingEnabled: "启用索引", pollIntervalMs: "轮询间隔（毫秒）", retryDelayMs: "重试延迟（毫秒）", maxAttempts: "最大尝试次数",
         configHelp: "直接编辑 JSON。API 密钥为只写：添加字符串字段 \"apiKey\"（如 embedding.apiKey）即可设置；密钥只发送给服务器、永不显示（仅通过 apiKeySet / apiKeyPreview 表明是否已设置）。",
         reload: "重新加载", save: "保存", testEmbedding: "测试嵌入", testRerank: "测试重排",

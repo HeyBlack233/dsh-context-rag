@@ -13,7 +13,7 @@ covers, and how to manually verify the plugin end-to-end in a live profile.
 Run both before opening a change; `npm run check` is fast and catches syntax
 errors, while `npm test` exercises behavior.
 
-The suite currently holds **255 tests** across 17 test files, and both
+The suite currently holds **319 tests** across 18 test files, and both
 `npm run check` and `npm test` are green (all pass, no failures).
 
 ## Test layout
@@ -36,6 +36,7 @@ test/
 ├── manifest.test.js
 ├── pairs.test.js
 ├── paths.test.js
+├── recall-state.test.js
 ├── render.test.js
 ├── rerank.test.js
 ├── retrieval.test.js
@@ -61,9 +62,10 @@ test/
 | `indexer` | Background worker: draining the outbox, batching, retry. |
 | `render` | Building the injected context text from retrieved pairs. |
 | `retrieval` | Query embedding, candidate scan, scoring, and top-K selection. |
+| `recall-state` | Persistent turn-dedupe state: load/prune/record/eligibility, retention by days and max sessions, corrupt/missing-file handling, and atomic persistence. |
 | `inject` | Dedupe per user message and attaching the injected context message. |
 | `api` | The host-facing HTTP API, trust checks, actions, and error mapping. |
-| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, workspace/all scope, rerank fallback, disabled indexing, and render budget. |
+| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, workspace/all scope, same-session exclusion and turn dedupe, rerank fallback, disabled indexing, and render budget. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, and the no-icon contract. |
 | `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, form fields, theme tokens, and EN/ZH key parity. |
 
@@ -112,6 +114,10 @@ live session:
    endpoint, and confirm candidates are reranked.
 9. **Rebuild the index** — trigger `index.rebuild` and confirm the index is
    rebuilt from JSONL.
+10. **Check the recall filters** — with `allowSameSession` `false` (default),
+    earlier pairs from the same session are not recalled; with
+    `dedupeTurns` set, recently injected pairs are not re-injected within the
+    turn distance, and `recall-state.json` appears in the data home.
 
 See [operations.md](operations.md) for the data paths and
 [retrieval-and-injection.md](retrieval-and-injection.md) for how injected

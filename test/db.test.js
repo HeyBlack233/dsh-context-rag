@@ -390,6 +390,83 @@ test("db: candidates returns an empty list when nothing matches", async (t) => {
   assert.deepEqual(db.candidates({ scope: "all", model: "m", dim: 3, limit: 10 }), []);
 });
 
+test("db: candidates excludes a session when excludeSessionId is given", async (t) => {
+  const { db } = await makeDb(t);
+  const now = 1_700_000_000_000;
+  db.upsertPair(samplePair({ pairId: "s1a", sessionId: "session-1", cwd: "/w1", turn: 0, createdAt: now }));
+  db.upsertPair(samplePair({ pairId: "s1b", sessionId: "session-1", cwd: "/w1", turn: 1, createdAt: now + 100 }));
+  db.upsertPair(samplePair({ pairId: "s2a", sessionId: "session-2", cwd: "/w1", turn: 2, createdAt: now + 200 }));
+  db.upsertPair(samplePair({ pairId: "s3a", sessionId: "session-3", cwd: "/w2", turn: 0, createdAt: now + 300 }));
+  for (const pairId of ["s1a", "s1b", "s2a", "s3a"]) {
+    db.setEmbedding(pairId, vector([1, 2, 3]), { model: "m1", dim: 3 });
+  }
+
+  // Workspace scope: only the exact excluded session is removed.
+  const ws = db.candidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, limit: 10, excludeSessionId: "session-1" });
+  assert.deepEqual(
+    ws.map((c) => c.pairId),
+    ["s2a"],
+  );
+
+  // "all" scope: the exclusion still applies.
+  const all = db.candidates({ scope: "all", model: "m1", dim: 3, limit: 10, excludeSessionId: "session-2" });
+  assert.deepEqual(
+    all.map((c) => c.pairId),
+    ["s3a", "s1b", "s1a"],
+  );
+
+  // Empty-string excludeSessionId behaves like no exclusion.
+  const noExclude = db.candidates({ scope: "all", model: "m1", dim: 3, limit: 10, excludeSessionId: "" });
+  assert.deepEqual(
+    noExclude.map((c) => c.pairId),
+    ["s3a", "s2a", "s1b", "s1a"],
+  );
+
+  // limit is still honored after the exclusion.
+  const limited = db.candidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, limit: 1, excludeSessionId: "session-2" });
+  assert.deepEqual(
+    limited.map((c) => c.pairId),
+    ["s1b"],
+  );
+
+  // Validation semantics are unchanged.
+  assert.throws(() => db.candidates({ scope: "workspace", model: "m1", dim: 3, excludeSessionId: "x" }), TypeError);
+});
+
+test("db: countCandidates counts matching pairs with an optional session filter", async (t) => {
+  const { db } = await makeDb(t);
+  const now = 1_700_000_000_000;
+  db.upsertPair(samplePair({ pairId: "s1a", sessionId: "session-1", cwd: "/w1", turn: 0, createdAt: now }));
+  db.upsertPair(samplePair({ pairId: "s1b", sessionId: "session-1", cwd: "/w1", turn: 1, createdAt: now + 100 }));
+  db.upsertPair(samplePair({ pairId: "s2a", sessionId: "session-2", cwd: "/w1", turn: 2, createdAt: now + 200 }));
+  db.upsertPair(samplePair({ pairId: "s3a", sessionId: "session-3", cwd: "/w2", turn: 0, createdAt: now + 300 }));
+  db.upsertPair(samplePair({ pairId: "unindexed", sessionId: "session-1", cwd: "/w1", turn: 9, createdAt: now + 400 }));
+  for (const pairId of ["s1a", "s1b", "s2a", "s3a"]) {
+    db.setEmbedding(pairId, vector([1, 2, 3]), { model: "m1", dim: 3 });
+  }
+
+  // Workspace scope, no session filter: every indexed /w1 row.
+  assert.equal(typeof db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3 }), "number");
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3 }), 3);
+
+  // Session filter counts only that exact session (the unindexed pair is never counted).
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, sessionId: "session-1" }), 2);
+  assert.equal(db.countCandidates({ scope: "all", model: "m1", dim: 3, sessionId: "session-3" }), 1);
+
+  // Empty-string sessionId behaves like no filter.
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w1", model: "m1", dim: 3, sessionId: "" }), 3);
+
+  // Zero cases: unknown session, unknown model, other workspace.
+  assert.equal(db.countCandidates({ scope: "all", model: "m1", dim: 3, sessionId: "nope" }), 0);
+  assert.equal(db.countCandidates({ scope: "all", model: "m2", dim: 3 }), 0);
+  assert.equal(db.countCandidates({ scope: "workspace", cwd: "/w2", model: "m1", dim: 3 }), 1);
+
+  // Validation mirrors candidates.
+  assert.throws(() => db.countCandidates({ scope: "workspace", model: "m1", dim: 3 }), TypeError);
+  assert.throws(() => db.countCandidates({ scope: "all", model: "", dim: 3 }), TypeError);
+  assert.throws(() => db.countCandidates({ scope: "all", model: "m1", dim: 0 }), RangeError);
+});
+
 test("db: metaGet/metaSet round-trip and overwrite", async (t) => {
   const { db } = await makeDb(t);
   assert.equal(db.metaGet("missing"), null);

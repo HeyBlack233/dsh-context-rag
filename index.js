@@ -18,6 +18,7 @@ import { createCapture } from "./lib/capture.js";
 import { createIndexer } from "./lib/indexer.js";
 import { createRetriever } from "./lib/retrieval.js";
 import { createInjector } from "./lib/inject.js";
+import { createRecallState } from "./lib/recall-state.js";
 import { registerApi } from "./lib/api.js";
 
 /** Plugin row name. */
@@ -49,6 +50,7 @@ export function apply(ctx, config = {}) {
   let configStore = null;
   let db = null;
   let initError = null;
+  let recallState = null;
 
   // Config store; keep it (and the API) alive even when loading fails.
   try {
@@ -77,6 +79,25 @@ export function apply(ctx, config = {}) {
     } catch (err) {
       initError = messageOf(err);
       logger.error(`[context-rag] failed to open index database: ${initError}`);
+    }
+
+    // Persistent recall state for turn dedupe; independent of the index
+    // database and fail-open: if it cannot be created or loaded, continue
+    // without it (turn dedupe simply does not run).
+    try {
+      recallState = createRecallState({
+        file: path.join(configStore.home, "recall-state.json"),
+        logger,
+      });
+      const config = configStore.get();
+      recallState.load({
+        retentionDays: config.retrieval?.dedupeStateRetentionDays ?? 90,
+        maxSessions: config.retrieval?.dedupeStateMaxSessions ?? 500,
+      });
+    } catch (err) {
+      recallState = null;
+      initError ??= `recall-state: ${messageOf(err)}`;
+      logger.error(`[context-rag] recall-state setup failed: ${initError}`);
     }
   } else if (!initError) {
     initError = "config store unavailable";
@@ -111,13 +132,13 @@ export function apply(ctx, config = {}) {
       logger.error(`[context-rag] failed to create indexer: ${initError}`);
     }
     try {
-      retriever = createRetriever({ db, configStore, embeddings, reranker, logger });
+      retriever = createRetriever({ db, configStore, embeddings, reranker, recallState, logger });
     } catch (err) {
       initError = `retriever: ${messageOf(err)}`;
       logger.error(`[context-rag] failed to create retriever: ${initError}`);
     }
     try {
-      injector = createInjector({ retriever, configStore, logger });
+      injector = createInjector({ retriever, configStore, recallState, logger });
     } catch (err) {
       initError = `injector: ${messageOf(err)}`;
       logger.error(`[context-rag] failed to create injector: ${initError}`);
@@ -164,7 +185,7 @@ export function apply(ctx, config = {}) {
 
   // Config API. Prefer injection so the route only mounts once webServer is
   // available; fall back to a directly present `ctx.webServer`.
-  const deps = { configStore, db, embeddings, reranker, indexer, retriever, injector, initError };
+  const deps = { configStore, db, embeddings, reranker, indexer, retriever, injector, recallState, initError };
   try {
     if (typeof ctx.inject === "function") {
       ctx.inject(["webServer"], (webCtx) => {

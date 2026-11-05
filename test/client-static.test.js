@@ -115,6 +115,10 @@ test('client.js: structured form markers and field paths exist', () => {
     'retrieval.topK',
     'retrieval.minScore',
     'retrieval.rerankMinScore',
+    'retrieval.allowSameSession',
+    'retrieval.dedupeTurns',
+    'retrieval.dedupeStateRetentionDays',
+    'retrieval.dedupeStateMaxSessions',
     'indexing.enabled',
   ]) {
     assert.ok(text.includes(fieldPath), `must bind field path ${fieldPath}`);
@@ -165,6 +169,8 @@ test('client.js: EN/ZH parity for every UI translation key', () => {
     'maxEmbeddingChars', 'rerankEnabled', 'rerankBaseUrl', 'rerankModel',
     'rerankPath', 'injectionEnabled', 'scope', 'scopeWorkspace', 'scopeAll',
     'candidateLimit', 'topK', 'minScore', 'rerankMinScore', 'maxContextChars',
+    'allowSameSession', 'dedupeTurns', 'dedupeStateRetentionDays',
+    'dedupeStateMaxSessions', 'dedupeHelp',
     'indexingEnabled', 'pollIntervalMs', 'retryDelayMs', 'maxAttempts',
     'configHelp', 'reload', 'save', 'testEmbedding', 'testRerank',
     'rebuild', 'clear', 'confirmClear', 'saved', 'cleared', 'rebuilt',

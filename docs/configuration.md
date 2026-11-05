@@ -48,6 +48,30 @@ Optional; disabled by default.
 | `timeoutMs` | `3000` | Retrieval pipeline timeout. |
 | `injectionEnabled` | `true` | Whether to inject retrieved context at all. |
 | `scanLimit` | `5000` | Max index rows examined during the scan. |
+| `allowSameSession` | `false` | Whether pairs from the current session are eligible. `false` excludes pairs whose `sessionId` equals the current session id from **all** recall modes; `true` allows them. Only exact session ids match — forked/derived sessions are different sessions. |
+| `dedupeTurns` | `5` | Turn-distance dedupe for **context injection only**: a pair last injected at turn `L` is eligible again only when `T - L >= dedupeTurns`. `0` disables turn dedupe; `-1` allows each pair at most once per session, ever. Filtering happens before scoring/rerank/topK. |
+| `dedupeStateRetentionDays` | `90` | Sessions in the recall-state file are dropped when their latest recall is older than this many days; `0` disables the time limit. |
+| `dedupeStateMaxSessions` | `500` | Keep at most this many most-recently-active sessions in the recall-state file; `0` disables the count limit. |
+
+Recall filters:
+
+- `allowSameSession` is a **general** retrieval filter: it applies to every recall
+  mode (context injection today, and future active recall modes). `dedupeTurns`
+  and its bookkeeping are **injection-only**.
+- Turn-dedupe bookkeeping lives in a **separate state file**,
+  `recall-state.json` under the data home (see
+  [storage-and-data-model.md](storage-and-data-model.md)). It stores only
+  session ids, pair ids, turns, timestamps, and counts — never message text —
+  and is independent of `index.sqlite`: it survives plugin/DSH restarts and
+  deletion of the index. Retention cleanup (by days and by session count) runs
+  on load and after every write; setting both limits to `0` disables age- and
+  count-based pruning (empty sessions are still dropped).
+- Deleting `recall-state.json` is safe: it only resets dedupe history (pairs
+  become eligible again). The JSONL pair log remains the source of truth.
+
+Validation: `allowSameSession` must be a boolean; `dedupeTurns` is an integer
+from `-1` to `10000`; `dedupeStateRetentionDays` is an integer from `0` to
+`36500`; `dedupeStateMaxSessions` is an integer from `0` to `1000000`.
 
 ## Indexing
 
@@ -62,7 +86,7 @@ Optional; disabled by default.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `home` | `$DSH_HOME/context-rag/` | Root directory for `config.json`, `pairs/`, and `index.sqlite`. |
+| `home` | `$DSH_HOME/context-rag/` | Root directory for `config.json`, `pairs/`, `index.sqlite`, and `recall-state.json`. |
 
 ## Editing and safety
 
@@ -71,6 +95,8 @@ Optional; disabled by default.
   but reads back redacted values.
 - The SQLite index is rebuildable: deleting `index.sqlite` is safe and it is
   rebuilt from the JSONL pair log on the next startup reconcile.
+- `recall-state.json` is a separate, disposable file: deleting it only resets
+  dedupe history. The JSONL log and the index are unaffected.
 
 ## Minimal setup to activate retrieval
 

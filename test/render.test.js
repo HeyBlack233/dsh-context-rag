@@ -110,3 +110,65 @@ test("truncates the first entry to fit a small budget instead of returning null"
 test("returns null when the budget is too small for any entry", () => {
   assert.equal(renderInjection({ pairs: [makePair()], maxChars: HEADER.length + 10 }), null);
 });
+
+// ---------------------------------------------------------------------------
+// pairIds: which pairs were actually rendered.
+// ---------------------------------------------------------------------------
+
+test("pairIds lists only the pairs actually included, excluding trailing drops", () => {
+  const big = "y".repeat(300);
+  const result = renderInjection({
+    pairs: [
+      makePair({ pairId: "p1" }),
+      makePair({ pairId: "p2", userText: big, assistantText: big }),
+    ],
+    maxChars: HEADER.length + 170,
+  });
+  assert.equal(result.pairCount, 1);
+  assert.deepEqual(result.pairIds, ["p1"]);
+});
+
+test("pairIds includes the truncated first entry", () => {
+  const result = renderInjection({
+    pairs: [
+      makePair({ pairId: "trunc", userText: "u".repeat(300), assistantText: "a".repeat(300) }),
+    ],
+    maxChars: HEADER.length + 120,
+  });
+  assert.ok(result);
+  assert.equal(result.pairCount, 1);
+  assert.ok(result.text.includes("…[truncated]…"));
+  assert.deepEqual(result.pairIds, ["trunc"]);
+});
+
+test("pairIds filters out empty or missing pair ids", () => {
+  const result = renderInjection({
+    pairs: [
+      makePair({ userText: "no id" }),
+      makePair({ pairId: "", userText: "empty id" }),
+      makePair({ pairId: "real", userText: "real id" }),
+    ],
+    maxChars: 2000,
+  });
+  assert.equal(result.pairCount, 3);
+  assert.deepEqual(result.pairIds, ["real"]);
+});
+
+test("pairIds preserves render order", () => {
+  const result = renderInjection({
+    pairs: [
+      makePair({ pairId: "first" }),
+      makePair({ pairId: "second" }),
+      makePair({ pairId: "third" }),
+    ],
+    maxChars: 2000,
+  });
+  assert.equal(result.pairCount, 3);
+  assert.deepEqual(result.pairIds, ["first", "second", "third"]);
+});
+
+test("pairIds is empty when no pairs are rendered", () => {
+  const result = renderInjection({ pairs: [], maxChars: 1000 });
+  assert.ok(result);
+  assert.deepEqual(result.pairIds, []);
+});

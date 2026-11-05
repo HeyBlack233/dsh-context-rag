@@ -16,13 +16,17 @@ function makeConfig(overrides = {}) {
       timeoutMs: 5000,
       injectionEnabled: true,
       scanLimit: 100,
+      allowSameSession: false,
+      dedupeTurns: 5,
     },
     ...overrides,
   };
 }
 
-function makeDb(impl) {
-  return { candidates: impl };
+function makeDb(candidatesImpl, countCandidatesImpl = null) {
+  const db = { candidates: candidatesImpl };
+  if (countCandidatesImpl) db.countCandidates = countCandidatesImpl;
+  return db;
 }
 
 function makeEmbeddings(vector, onEmbed = null) {
@@ -43,13 +47,14 @@ function makeLogger() {
   };
 }
 
-function makeRetriever({ config, db, embeddings, reranker, logger }) {
+function makeRetriever({ config, db, embeddings, reranker, logger, recallState }) {
   return createRetriever({
     db,
     configStore: { get: () => config },
     embeddings,
     reranker: reranker ?? null,
     logger,
+    recallState,
   });
 }
 
@@ -372,4 +377,312 @@ test("status tracks the last successful retrieval", async () => {
   assert.equal(status.lastRetrieval.queryPreview, "hello world");
   assert.equal(status.lastRetrieval.scope, "workspace");
   assert.equal(status.lastRetrieval.reranked, false);
+});
+
+test("excludes same-session candidates by default and reports the count", async () => {
+  const candidates = [
+    { pairId: 1, sessionId: "other-session", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+  ];
+  const calls = [];
+  const db = makeDb(
+    (args) => {
+      calls.push(args);
+      return candidates;
+    },
+    async (args) => {
+      assert.deepEqual(args, { scope: "workspace", cwd: "/x", model: "m", dim: 4, sessionId: "session-x" });
+      return 2;
+    },
+  );
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db,
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "session-x" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].excludeSessionId, "session-x");
+  assert.equal(result.stats.candidateCount, 1);
+  assert.equal(result.stats.excludedSameSession, 2);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), [1]);
+});
+
+test("allows same-session candidates when allowSameSession is true", async () => {
+  const candidates = [
+    { pairId: 1, sessionId: "session-x", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+  ];
+  const calls = [];
+  let countCalls = 0;
+  const db = makeDb(
+    (args) => {
+      calls.push(args);
+      return candidates;
+    },
+    () => {
+      countCalls += 1;
+      return 1;
+    },
+  );
+  const retriever = makeRetriever({
+    config: makeConfig({ retrieval: { ...makeConfig().retrieval, allowSameSession: true } }),
+    db,
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "session-x" });
+  assert.equal(calls[0].excludeSessionId, undefined);
+  assert.equal(countCalls, 0);
+  assert.equal(result.stats.excludedSameSession, 0);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), [1]);
+});
+
+test("skips the same-session filter when sessionId is empty", async () => {
+  const calls = [];
+  let countCalls = 0;
+  const db = makeDb(
+    (args) => {
+      calls.push(args);
+      return [{ pairId: 1, sessionId: "s", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] }];
+    },
+    () => {
+      countCalls += 1;
+      return 1;
+    },
+  );
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db,
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x" });
+  assert.equal(calls[0].excludeSessionId, undefined);
+  assert.equal(countCalls, 0);
+  assert.equal(result.stats.excludedSameSession, 0);
+  assert.equal(result.stats.candidateCount, 1);
+});
+
+test("tolerates a db without countCandidates", async () => {
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db: makeDb(() => [{ pairId: 1, userText: "a", assistantText: "A", vector: [1, 0, 0, 0] }]),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "session-x" });
+  assert.equal(result.stats.excludedSameSession, 0);
+  assert.equal(result.stats.candidateCount, 1);
+  assert.equal(result.pairs.length, 1);
+});
+
+test("falls back to 0 when countCandidates throws", async () => {
+  const db = makeDb(
+    () => [],
+    () => {
+      throw new Error("boom");
+    },
+  );
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db,
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "session-x" });
+  assert.equal(result.stats.excludedSameSession, 0);
+  assert.deepEqual(result.pairs, []);
+});
+
+test("injection dedupe: a pair is eligible again after the configured turn distance", async () => {
+  const recalls = [];
+  const recorded = { recent: 1 };
+  const recallState = {
+    isEligible({ sessionId, pairId, turn, gap }) {
+      recalls.push({ sessionId, pairId, turn, gap });
+      const last = recorded[pairId];
+      if (last === undefined) return true;
+      if (gap === -1) return false;
+      return turn - last >= gap;
+    },
+  };
+  const candidates = [
+    { pairId: "recent", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+    { pairId: "fresh", userText: "b", assistantText: "B", vector: [1, 0, 0, 0] },
+  ];
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    recallState,
+    logger: makeLogger(),
+  });
+
+  // Turn 4: recent was injected at turn 1; 4 - 1 = 3 < 5 -> excluded.
+  let result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 4, mode: "injection" });
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["fresh"]);
+  assert.equal(result.stats.excludedDedupe, 1);
+  assert.equal(result.stats.dedupeApplied, true);
+  assert.deepEqual(recalls[0], { sessionId: "s", pairId: "recent", turn: 4, gap: 5 });
+
+  // Turn 6: 6 - 1 = 5 >= 5 -> eligible again.
+  result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 6, mode: "injection" });
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["recent", "fresh"]);
+  assert.equal(result.stats.excludedDedupe, 0);
+  assert.equal(result.stats.dedupeApplied, true);
+});
+
+test("injection dedupe: dedupeTurns 0 disables the filter entirely", async () => {
+  let calls = 0;
+  const recallState = {
+    isEligible() {
+      calls += 1;
+      return false;
+    },
+  };
+  const retriever = makeRetriever({
+    config: makeConfig({ retrieval: { ...makeConfig().retrieval, dedupeTurns: 0 } }),
+    db: makeDb(() => [{ pairId: "x", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] }]),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    recallState,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 1, mode: "injection" });
+  assert.equal(calls, 0);
+  assert.equal(result.stats.excludedDedupe, 0);
+  assert.equal(result.stats.dedupeApplied, false);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["x"]);
+});
+
+test("injection dedupe: dedupeTurns -1 excludes any recorded pair", async () => {
+  const recorded = new Set(["seen"]);
+  const recallState = {
+    isEligible({ pairId }) {
+      return !recorded.has(pairId); // once per session, ever
+    },
+  };
+  const candidates = [
+    { pairId: "seen", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+    { pairId: "fresh", userText: "b", assistantText: "B", vector: [1, 0, 0, 0] },
+  ];
+  const retriever = makeRetriever({
+    config: makeConfig({ retrieval: { ...makeConfig().retrieval, dedupeTurns: -1 } }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    recallState,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 10, mode: "injection" });
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["fresh"]);
+  assert.equal(result.stats.excludedDedupe, 1);
+  assert.equal(result.stats.dedupeApplied, true);
+});
+
+test("turn dedupe does not run outside injection mode", async () => {
+  let calls = 0;
+  const recallState = {
+    isEligible() {
+      calls += 1;
+      return false;
+    },
+  };
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db: makeDb(() => [{ pairId: "x", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] }]),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    recallState,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 3, mode: "active" });
+  assert.equal(calls, 0);
+  assert.equal(result.stats.excludedDedupe, 0);
+  assert.equal(result.stats.dedupeApplied, false);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["x"]);
+});
+
+test("turn dedupe does not run when recallState is absent", async () => {
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db: makeDb(() => [{ pairId: "x", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] }]),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 3, mode: "injection" });
+  assert.equal(result.stats.excludedDedupe, 0);
+  assert.equal(result.stats.dedupeApplied, false);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["x"]);
+});
+
+test("dedupe filters candidates before topK/rerank so eligible pairs fill slots", async () => {
+  const recorded = new Set(["a", "b"]);
+  const recallState = {
+    isEligible({ pairId }) {
+      return !recorded.has(pairId);
+    },
+  };
+  const candidates = [
+    { pairId: "a", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+    { pairId: "b", userText: "b", assistantText: "B", vector: [1, 0, 0, 0] },
+    { pairId: "c", userText: "c", assistantText: "C", vector: [1, 0, 0, 0] },
+  ];
+  let rerankDocs = null;
+  const reranker = {
+    async rerank({ documents }) {
+      rerankDocs = documents;
+      return {
+        results: documents.map((doc, index) => ({ index, document: doc, score: 1 - index * 0.1 })),
+        model: "r",
+      };
+    },
+  };
+  const retrieval = { ...makeConfig().retrieval, dedupeTurns: 5, topK: 2, candidateLimit: 3, minScore: 0 };
+  const retriever = makeRetriever({
+    config: makeConfig({ rerank: { enabled: true, model: "r" }, retrieval }),
+    db: makeDb(() => candidates),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    reranker,
+    recallState,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 2, mode: "injection" });
+  // Only the eligible candidate reaches the reranker.
+  assert.deepEqual(rerankDocs, ["User:\nc\n\nAssistant:\nC"]);
+  assert.deepEqual(result.pairs.map((p) => p.pairId), ["c"]);
+  assert.equal(result.stats.candidateCount, 3);
+  assert.equal(result.stats.excludedDedupe, 2);
+  assert.equal(result.stats.dedupeApplied, true);
+});
+
+test("reports filter counts in stats and lastRetrieval", async () => {
+  const recallState = {
+    isEligible({ pairId }) {
+      return pairId !== "recent";
+    },
+  };
+  const candidates = [
+    { pairId: "recent", userText: "a", assistantText: "A", vector: [1, 0, 0, 0] },
+    { pairId: "fresh", userText: "b", assistantText: "B", vector: [1, 0, 0, 0] },
+  ];
+  const retriever = makeRetriever({
+    config: makeConfig(),
+    db: makeDb(() => candidates, async () => 7),
+    embeddings: makeEmbeddings([1, 0, 0, 0]),
+    recallState,
+    logger: makeLogger(),
+  });
+  const result = await retriever.retrieve({ query: "q", cwd: "/x", sessionId: "s", turn: 3, mode: "injection" });
+  assert.equal(result.stats.candidateCount, 2);
+  assert.equal(result.stats.excludedSameSession, 7);
+  assert.equal(result.stats.excludedDedupe, 1);
+  assert.equal(result.stats.dedupeApplied, true);
+  assert.equal(result.stats.returned, 1);
+  assert.equal(result.stats.reranked, false);
+  assert.equal(typeof result.stats.latencyMs, "number");
+
+  const last = retriever.status().lastRetrieval;
+  assert.equal(last.pairCount, 1);
+  assert.equal(last.excludedSameSession, 7);
+  assert.equal(last.excludedDedupe, 1);
+  assert.equal(last.dedupeApplied, true);
+  assert.equal(last.scope, "workspace");
 });

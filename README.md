@@ -22,6 +22,14 @@ Trajectory so you can see exactly what was retrieved and used.
   re-rank the initial candidates before injection.
 - **Workspace or all-scope** retrieval: search the current workspace by default,
   or across all workspaces.
+- **Same-session recall is off by default**: pairs from the current session are
+  excluded unless you enable `allowSameSession`; forked/derived sessions count
+  as different sessions.
+- **Turn-distance dedupe** for context injection: a pair is not re-injected
+  until `dedupeTurns` turns have passed (`0` disables turn dedupe; `-1` allows
+  each pair only once per session, ever). The bookkeeping lives in a separate,
+  persistent `recall-state.json`, pruned by `dedupeStateRetentionDays` and
+  `dedupeStateMaxSessions`.
 - **Pre-step durable context injection** shown in the Trajectory.
 - **Configure panel** on the plugin's page in the DSH Web GUI (above the
   **Components** section), with **English and Simplified Chinese** UI.
@@ -53,6 +61,12 @@ Defaults: `candidateLimit = 20`, `topK = 5`, `minScore = 0.40`,
 `rerankMinScore` filters the reranker's relevance score. Both range from `0.00`
 to `1.00` with two decimals.
 
+Recall defaults: `allowSameSession = false` (same-session recall off),
+`dedupeTurns = 5` (injection-only turn dedupe; `0` disables, `-1` = once per
+session ever), `dedupeStateRetentionDays = 90` and
+`dedupeStateMaxSessions = 500` (recall-state retention; `0` disables the
+corresponding limit).
+
 ## Data layout
 
 Everything lives under `$DSH_HOME/context-rag`:
@@ -60,6 +74,8 @@ Everything lives under `$DSH_HOME/context-rag`:
 - `config.json` — plugin configuration.
 - `pairs/*.jsonl` — human-readable (user message, final assistant reply) pairs.
 - `index.sqlite` — the embedding index (rebuildable from `pairs/*.jsonl`).
+- `recall-state.json` — turn-dedupe history (ids/turns/timestamps/counts only;
+  safe to delete — dedupe history resets).
 
 ## How it works
 

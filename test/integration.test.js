@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { apply } from "../index.js";
 import { createConfigStore } from "../lib/config.js";
 import { openIndexDatabase } from "../lib/db.js";
@@ -19,6 +20,7 @@ import { createCapture } from "../lib/capture.js";
 import { createIndexer } from "../lib/indexer.js";
 import { createRetriever } from "../lib/retrieval.js";
 import { createInjector } from "../lib/inject.js";
+import { createRecallState } from "../lib/recall-state.js";
 import { renderInjection } from "../lib/render.js";
 import { readPairs } from "../lib/pairs.js";
 import { makeTempDir, cleanupTempDir } from "./helpers/tmp.js";
@@ -155,7 +157,8 @@ function captureTurn(capture, session, { turn, userText, userId, assistantText, 
 /**
  * Stand up a real end-to-end pipeline in a fresh temporary home:
  * config store + real SQLite index DB + capture + indexer + retriever +
- * injector (attached to a fake ctx). Cleanup is registered on `t.after`.
+ * injector (attached to a fake ctx) + a real recall-state store persisted
+ * under `<home>/recall-state.json`. Cleanup is registered on `t.after`.
  *
  * @param {import("node:test").TestContext} t
  * @param {object} [options]
@@ -184,8 +187,16 @@ async function makePipeline(t, { patch = {}, reranker = null } = {}) {
   const embeddings = makeEmbeddings();
   const capture = createCapture({ db, configStore });
   const indexer = createIndexer({ db, configStore, embeddings, home });
-  const retriever = createRetriever({ db, configStore, embeddings, reranker });
-  const injector = createInjector({ retriever, configStore });
+  const recallState = createRecallState({
+    file: path.join(home, "recall-state.json"),
+  });
+  const config = configStore.get();
+  recallState.load({
+    retentionDays: config.retrieval?.dedupeStateRetentionDays ?? 90,
+    maxSessions: config.retrieval?.dedupeStateMaxSessions ?? 500,
+  });
+  const retriever = createRetriever({ db, configStore, embeddings, reranker, recallState });
+  const injector = createInjector({ retriever, configStore, recallState });
 
   const injectorCtx = makeCtx();
   injector.attach(injectorCtx);
@@ -200,7 +211,7 @@ async function makePipeline(t, { patch = {}, reranker = null } = {}) {
     await cleanupTempDir(home);
   });
 
-  return { home, configStore, db, capture, indexer, retriever, injector, injectorCtx, embeddings };
+  return { home, configStore, db, capture, indexer, retriever, injector, injectorCtx, embeddings, recallState };
 }
 
 /** Collect the pair records currently on disk under a home directory. */
@@ -210,6 +221,38 @@ async function collectPairs(home) {
     records.push(record);
   }
   return records;
+}
+
+/**
+ * Emit a single `agent/pre-step` injection for a session with one fresh
+ * direct user message, returning the resulting decision.
+ *
+ * @param {object} injectorCtx - Fake host context with the injector attached.
+ * @param {object} session - Session object with `id` and `header.cwd`.
+ * @param {number} turn - Current session turn.
+ * @param {string} text - User message text.
+ * @param {string} messageId - Unique user message id.
+ * @returns {Promise<object>} The final decision.
+ */
+async function emitInjection(injectorCtx, session, turn, text, messageId) {
+  const baseDecision = {
+    kind: "enter",
+    messages: [
+      {
+        id: messageId,
+        role: "user",
+        content: [{ type: "text", text }],
+        source: { kind: "user" },
+      },
+    ],
+  };
+  const payload = {
+    agent: { session },
+    turn,
+    step: 1,
+    signal: new AbortController().signal,
+  };
+  return injectorCtx.emit("agent/pre-step", payload, () => baseDecision);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +296,9 @@ test("apply registers listeners and the config API, then tears down cleanly", as
 
 test("captures a pair, indexes it, and injects related context with dedupe", async (t) => {
   const { home, configStore, db, capture, indexer, retriever, injectorCtx } =
-    await makePipeline(t);
+    await makePipeline(t, {
+      patch: { retrieval: { allowSameSession: true } },
+    });
 
   // Simulate one turn in a workspace.
   const session = { id: "sess-alpha", header: { cwd: "/tmp/work" } };
@@ -318,6 +363,136 @@ test("captures a pair, indexes it, and injects related context with dedupe", asy
     decision2.messages.filter((m) => m.source?.kind === "context-rag").length,
     0,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Test 2b: same-session exclusion (default allowSameSession: false).
+// ---------------------------------------------------------------------------
+
+test("default allowSameSession false does not inject the current session's pair; other sessions stay eligible", async (t) => {
+  const { db, capture, indexer, injectorCtx } = await makePipeline(t);
+
+  // One pair in session A, same workspace as the injections.
+  const sessionA = { id: "sess-a", header: { cwd: "/tmp/work" } };
+  captureTurn(capture, sessionA, {
+    turn: 1,
+    userText: "alpha question",
+    userId: "au",
+    assistantText: "alpha answer",
+    assistantId: "aa",
+  });
+  await capture.stopping({ session: sessionA }, 1);
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 1);
+
+  // A pre-step injection in session A must NOT pull in its own pair.
+  const same = await emitInjection(injectorCtx, sessionA, 2, "alpha follow up", "u2");
+  assert.equal(
+    same.messages.filter((m) => m.source?.kind === "context-rag").length,
+    0,
+    "the current session's own pair must not be injected by default",
+  );
+
+  // A pair from another session in the same workspace is still eligible.
+  const sessionB = { id: "sess-b", header: { cwd: "/tmp/work" } };
+  captureTurn(capture, sessionB, {
+    turn: 1,
+    userText: "beta question",
+    userId: "bu",
+    assistantText: "beta answer",
+    assistantId: "ba",
+  });
+  await capture.stopping({ session: sessionB }, 1);
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 2);
+
+  const other = await emitInjection(injectorCtx, sessionA, 3, "beta follow up", "u3");
+  const added = other.messages.filter((m) => m.source?.kind === "context-rag");
+  assert.equal(added.length, 1, "a pair from another session must still be injectable");
+  assert.ok(added[0].content[0].text.includes("beta question"));
+});
+
+// ---------------------------------------------------------------------------
+// Test 2c: turn dedupe end-to-end with a real recall-state file.
+// ---------------------------------------------------------------------------
+
+test("turn dedupe: pair injected at turn 2 is skipped at turn 3 and eligible again at turn 7", async (t) => {
+  const { home, db, capture, indexer, retriever, injectorCtx } = await makePipeline(t, {
+    patch: { retrieval: { allowSameSession: true, dedupeTurns: 5 } },
+  });
+
+  const session = { id: "sess-dedupe", header: { cwd: "/tmp/work" } };
+  captureTurn(capture, session, {
+    turn: 1,
+    userText: "alpha question",
+    userId: "u1",
+    assistantText: "alpha answer",
+    assistantId: "a1",
+  });
+  await capture.stopping({ session }, 1);
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 1);
+
+  // Direct retrieval at turn 2: the pair is eligible; capture its id.
+  const first = await retriever.retrieve({
+    query: "alpha follow up",
+    cwd: "/tmp/work",
+    sessionId: session.id,
+    turn: 2,
+    mode: "injection",
+  });
+  assert.equal(first.stats.dedupeApplied, true);
+  assert.equal(first.stats.excludedDedupe, 0);
+  assert.ok(first.pairs.length > 0, "the pair must be eligible at turn 2");
+  const pairId = first.pairs[0].pairId;
+  assert.equal(typeof pairId, "string");
+  assert.ok(pairId.length > 0);
+
+  // Real pre-step injection at turn 2: injects the pair and records it.
+  const injected2 = await emitInjection(injectorCtx, session, 2, "alpha follow up", "u2");
+  const added2 = injected2.messages.filter((m) => m.source?.kind === "context-rag");
+  assert.equal(added2.length, 1, "turn 2 must inject the pair");
+  assert.ok(added2[0].content[0].text.includes("alpha question"));
+
+  // The recall-state file is persisted with the recorded turn.
+  const stateFile = path.join(home, "recall-state.json");
+  const state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(state.version, 1);
+  assert.equal(state.sessions[session.id].entries[pairId].lastTurn, 2);
+
+  // Turn 3: injected 1 turn ago; 3 - 2 = 1 < 5 -> excluded, nothing injected.
+  const injected3 = await emitInjection(injectorCtx, session, 3, "alpha follow up again", "u3");
+  assert.equal(
+    injected3.messages.filter((m) => m.source?.kind === "context-rag").length,
+    0,
+    "the pair must not be injected at turn 3",
+  );
+
+  // Turn 7: 7 - 2 = 5 >= 5 -> eligible again.
+  const later = await retriever.retrieve({
+    query: "alpha follow up",
+    cwd: "/tmp/work",
+    sessionId: session.id,
+    turn: 7,
+    mode: "injection",
+  });
+  assert.equal(later.stats.dedupeApplied, true);
+  assert.equal(later.stats.excludedDedupe, 0);
+  assert.ok(
+    later.pairs.some((pair) => pair.pairId === pairId),
+    "the pair must be eligible again at turn 7",
+  );
+
+  // Real pre-step injection at turn 7: injects the pair once more and
+  // re-records the later turn.
+  const injected7 = await emitInjection(injectorCtx, session, 7, "alpha follow up", "u7");
+  const added7 = injected7.messages.filter((m) => m.source?.kind === "context-rag");
+  assert.equal(added7.length, 1, "turn 7 must inject the pair again");
+  const state2 = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(state2.sessions[session.id].entries[pairId].lastTurn, 7);
 });
 
 // ---------------------------------------------------------------------------

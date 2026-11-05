@@ -16,7 +16,8 @@ $DSH_HOME/context-rag/
 ├── pairs/
 │   └── <workspace-slug>/
 │       └── <session-slug>.jsonl
-└── index.sqlite         # rebuildable index
+├── index.sqlite         # rebuildable index
+└── recall-state.json    # turn-dedupe bookkeeping (disposable)
 ```
 
 ## Backup
@@ -31,6 +32,11 @@ cp -r "$DSH_HOME/context-rag/pairs" /path/to/backup/
 Backing up `pairs/` is sufficient for full data recovery: the index is
 rebuildable from it. You may also back up `config.json` if you want to restore
 configuration (note that API keys would be included).
+
+`recall-state.json` is **optional** to back up: it holds turn-dedupe history
+only (see [storage-and-data-model.md](storage-and-data-model.md)) and is not
+needed for pair recovery. Skipping it means pairs may be re-injected once after
+a restore — dedupe history simply resets.
 
 ## Rebuild the index
 
@@ -84,6 +90,10 @@ Disk usage comes almost entirely from:
 - The JSONL pair log (`pairs/`) — grows with every captured turn.
 - The SQLite index (`index.sqlite`) — proportional to the number of indexed
   pairs and their embedding size.
+- The recall state (`recall-state.json`) — small (ids/turns/timestamps/counts
+  only) and bounded by retention: sessions older than
+  `dedupeStateRetentionDays` and sessions beyond `dedupeStateMaxSessions` are
+  pruned on load and after every write.
 
 The index is bounded and rebuildable; the JSONL is the durable and growing
 record. If disk is a concern, prune the JSONL (see safe deletion below) and then
@@ -95,6 +105,8 @@ rebuild/clear the index.
   permanently. The index still holds the old embeddings until a reconcile or
   rebuild drops them, so follow up with a rebuild/clear after editing the log.
 - **`index.sqlite`**: safe to delete at any time; it is rebuilt from JSONL.
+- **`recall-state.json`**: safe to delete at any time; only dedupe history is
+  lost (pairs become eligible again). It is recreated as needed.
 - **`config.json`**: removing it resets configuration (including any stored API
   keys).
 
@@ -108,6 +120,7 @@ rebuild/clear the index.
 | Vectors not comparable | Dimension mismatch between query and index | Match `dimensions`/model; reindex after a model change. |
 | Rerank fails | Rerank endpoint down or misconfigured | Fix rerank config; the pipeline **falls back** to non-reranked results. |
 | Index not writable | SQLite unavailable / `initError` at startup | Check the data home is writable; verify SQLite can open/create `index.sqlite`. |
+| Turn dedupe not applied / history not recorded | `recall-state.json` missing, corrupt, or unwritable | Recall state is **fail-open**: a warning is logged, dedupe is skipped, and injection continues. Check the data home is writable; deleting the file resets dedupe history. |
 
 All failure modes are **fail-open** on the read path: retrieval errors skip
 injection and log a warning rather than failing the turn (see
@@ -120,5 +133,12 @@ pairs in the outbox and retries within `maxAttempts`.
   `@local/dsh-context-rag` version over the previous one).
 - **No data migration is expected**: the JSONL pair log and the index format are
   stable, so an upgrade does not rewrite or move your data.
+- **New defaults apply to existing configs**: nothing is deleted or migrated,
+  and existing `config.json` files simply gain the new defaults
+  (`retrieval.allowSameSession = false`, `retrieval.dedupeTurns = 5`,
+  `retrieval.dedupeStateRetentionDays = 90`,
+  `retrieval.dedupeStateMaxSessions = 500`). The most visible behavior change
+  is that same-session recall is now **off by default**; set
+  `retrieval.allowSameSession = true` to restore it.
 - After upgrading, restart/activate the plugin so the worker and hooks are
   re-registered; startup reconciliation ensures the index is current.

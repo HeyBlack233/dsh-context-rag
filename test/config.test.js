@@ -86,6 +86,10 @@ describe("DEFAULT_CONFIG", () => {
         timeoutMs: 3000,
         injectionEnabled: true,
         scanLimit: 5000,
+        allowSameSession: false,
+        dedupeTurns: 5,
+        dedupeStateRetentionDays: 90,
+        dedupeStateMaxSessions: 500,
       },
       indexing: {
         enabled: true,
@@ -272,10 +276,84 @@ describe("normalizeConfig", () => {
       assertInvalid({ indexing: { enabled: "true" } }, "indexing.enabled");
     });
 
+    test("allowSameSession must be a boolean", () => {
+      assertInvalid({ retrieval: { allowSameSession: "yes" } }, "retrieval.allowSameSession");
+      assertInvalid({ retrieval: { allowSameSession: 1 } }, "retrieval.allowSameSession");
+      assertInvalid({ retrieval: { allowSameSession: null } }, "retrieval.allowSameSession");
+      assertInvalid({ retrieval: { allowSameSession: 0 } }, "retrieval.allowSameSession");
+    });
+
+    test("dedupeTurns must be an integer between -1 and 10000", () => {
+      assertInvalid({ retrieval: { dedupeTurns: -2 } }, "retrieval.dedupeTurns");
+      assertInvalid({ retrieval: { dedupeTurns: 10001 } }, "retrieval.dedupeTurns");
+      assertInvalid({ retrieval: { dedupeTurns: 4.5 } }, "retrieval.dedupeTurns");
+      assertInvalid({ retrieval: { dedupeTurns: "5" } }, "retrieval.dedupeTurns");
+      assertInvalid({ retrieval: { dedupeTurns: null } }, "retrieval.dedupeTurns");
+    });
+
+    test("dedupeStateRetentionDays must be an integer between 0 and 36500", () => {
+      assertInvalid({ retrieval: { dedupeStateRetentionDays: -1 } }, "retrieval.dedupeStateRetentionDays");
+      assertInvalid({ retrieval: { dedupeStateRetentionDays: 36501 } }, "retrieval.dedupeStateRetentionDays");
+      assertInvalid({ retrieval: { dedupeStateRetentionDays: 1.5 } }, "retrieval.dedupeStateRetentionDays");
+      assertInvalid({ retrieval: { dedupeStateRetentionDays: "90" } }, "retrieval.dedupeStateRetentionDays");
+    });
+
+    test("dedupeStateMaxSessions must be an integer between 0 and 1000000", () => {
+      assertInvalid({ retrieval: { dedupeStateMaxSessions: -1 } }, "retrieval.dedupeStateMaxSessions");
+      assertInvalid({ retrieval: { dedupeStateMaxSessions: 1000001 } }, "retrieval.dedupeStateMaxSessions");
+      assertInvalid({ retrieval: { dedupeStateMaxSessions: 2.5 } }, "retrieval.dedupeStateMaxSessions");
+      assertInvalid({ retrieval: { dedupeStateMaxSessions: 500.5 } }, "retrieval.dedupeStateMaxSessions");
+    });
+
     test("invalid apiKey types (non-string, non-null)", () => {
       assertInvalid({ embedding: { apiKey: 123 } }, "embedding.apiKey");
       assertInvalid({ rerank: { apiKey: true } }, "rerank.apiKey");
     });
+  });
+
+  test("new retrieval dedupe fields accept valid values (-1/0/positive)", () => {
+    const cfg = normalizeConfig({
+      retrieval: {
+        allowSameSession: true,
+        dedupeTurns: -1,
+        dedupeStateRetentionDays: 0,
+        dedupeStateMaxSessions: 0,
+      },
+    });
+    assert.strictEqual(cfg.retrieval.allowSameSession, true);
+    assert.strictEqual(cfg.retrieval.dedupeTurns, -1);
+    assert.strictEqual(cfg.retrieval.dedupeStateRetentionDays, 0);
+    assert.strictEqual(cfg.retrieval.dedupeStateMaxSessions, 0);
+
+    const cfg2 = normalizeConfig({
+      retrieval: {
+        allowSameSession: false,
+        dedupeTurns: 0,
+        dedupeStateRetentionDays: 36500,
+        dedupeStateMaxSessions: 1000000,
+      },
+    });
+    assert.strictEqual(cfg2.retrieval.allowSameSession, false);
+    assert.strictEqual(cfg2.retrieval.dedupeTurns, 0);
+    assert.strictEqual(cfg2.retrieval.dedupeStateRetentionDays, 36500);
+    assert.strictEqual(cfg2.retrieval.dedupeStateMaxSessions, 1000000);
+  });
+
+  test("missing new retrieval dedupe keys fall back to defaults", () => {
+    const cfg = normalizeConfig({ retrieval: { dedupeTurns: 7 } });
+    assert.strictEqual(cfg.retrieval.dedupeTurns, 7);
+    assert.strictEqual(
+      cfg.retrieval.allowSameSession,
+      DEFAULT_CONFIG.retrieval.allowSameSession,
+    );
+    assert.strictEqual(
+      cfg.retrieval.dedupeStateRetentionDays,
+      DEFAULT_CONFIG.retrieval.dedupeStateRetentionDays,
+    );
+    assert.strictEqual(
+      cfg.retrieval.dedupeStateMaxSessions,
+      DEFAULT_CONFIG.retrieval.dedupeStateMaxSessions,
+    );
   });
 
   test("throws ConfigError with code INVALID_CONFIG and details.field", () => {

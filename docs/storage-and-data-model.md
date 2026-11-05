@@ -13,7 +13,8 @@ $DSH_HOME/context-rag/
 ├── pairs/
 │   └── <workspace-slug>/
 │       └── <session-slug>.jsonl
-└── index.sqlite         # rebuildable index
+├── index.sqlite         # rebuildable index
+└── recall-state.json    # turn-dedupe bookkeeping (separate, disposable)
 ```
 
 ## config.json
@@ -81,6 +82,46 @@ A queue of pairs awaiting embedding.
 ### `meta`
 
 Key/value store for index bookkeeping (e.g. schema version, worker state).
+
+## Recall state (recall-state.json)
+
+`recall-state.json` holds the turn-dedupe bookkeeping for context injection
+(see [retrieval-and-injection.md](retrieval-and-injection.md)). It is a
+separate file from `index.sqlite` and is written atomically with mode `0600`.
+It stores **only ids, turns, timestamps, and counts — never message text**.
+
+Schema (JSON, version 1):
+
+```json
+{
+  "version": 1,
+  "sessions": {
+    "<sessionId>": {
+      "lastActiveAt": 1730000000000,
+      "entries": {
+        "<pairId>": { "lastTurn": 12, "lastRecallAt": 1730000000000, "count": 2 }
+      }
+    }
+  }
+}
+```
+
+- Per (session id, pair id), `lastTurn` is the turn the pair was last injected,
+  `lastRecallAt` when that happened, and `count` how many times it has been
+  injected. `lastActiveAt` is the session's most recent recall activity.
+- **Retention**: cleanup runs on load and after every write. Sessions whose
+  latest recall is older than `retrieval.dedupeStateRetentionDays` (default
+  `90`) are dropped, and at most `retrieval.dedupeStateMaxSessions` (default
+  `500`) most-recently-active sessions are kept. `0` disables the corresponding
+  limit; with both `0`, pruning never removes data by age or count.
+- **Persistence**: the file survives plugin/DSH restarts and deletion of
+  `index.sqlite` — the two stores are independent.
+- **Safe to delete**: deleting `recall-state.json` merely resets dedupe history
+  (pairs become eligible again); nothing else is affected. It is **not** part
+  of the JSONL source of truth.
+- **Fail-open**: if the file is missing, corrupt, or unwritable, the store
+  warns and continues with empty state, so retrieval/injection keeps working
+  without turn dedupe.
 
 ## Write path
 

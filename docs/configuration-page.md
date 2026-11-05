@@ -41,9 +41,13 @@ The page is split into the following sections:
   - **Embedding** — `enabled`, `baseUrl`, `model`, `dimensions`, `apiKey`,
     `timeoutMs`, `maxRetries`, `batchSize`, `maxEmbeddingChars`;
   - **Rerank** — `enabled`, `baseUrl`, `model`, `path`, `apiKey`;
-  - **Retrieval** — `injectionEnabled`, `scope` (`workspace` / `all`),
-    `candidateLimit`, `topK`, `minScore`, `rerankMinScore`,
-    `maxContextChars`, `timeoutMs`;
+  - **Retrieval** — `injectionEnabled`, `allowSameSession`, `scope`
+    (`workspace` / `all`), `candidateLimit`, `topK`, `minScore`,
+    `rerankMinScore`, `maxContextChars`, `timeoutMs`, `dedupeTurns`,
+    `dedupeStateRetentionDays`, `dedupeStateMaxSessions`. A short help
+    paragraph below the rows explains the special values: `dedupeTurns` of `0`
+    disables turn dedupe and `-1` allows each pair only once per session, and
+    retention values of `0` disable that limit.
   - **Indexing** — `enabled`, `pollIntervalMs`, `retryDelayMs`, `maxAttempts`.
 - **Advanced JSON** — an editable JSON view of the whole config for fields
   not exposed in the structured form. Editing either view updates the same

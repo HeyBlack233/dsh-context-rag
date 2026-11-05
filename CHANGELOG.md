@@ -32,4 +32,23 @@ Release Date: TBD
   **Components** section (no separate row page): separate cards for the
   embedding, rerank, retrieval, and indexing settings, an advanced JSON view,
   write-only API-key handling, and English/Simplified Chinese UI.
+- Same-session recall is now **off by default**: `retrieval.allowSameSession`
+  (default `false`) excludes pairs from the current session in all recall modes;
+  set it to `true` to allow them. Forked/derived sessions count as different
+  sessions.
+- Injection-only turn dedupe: `retrieval.dedupeTurns` (default `5`) keeps a pair
+  from being re-injected until `T - L >= dedupeTurns`; `0` disables turn dedupe
+  and `-1` allows each pair at most once per session, ever. Only pairs actually
+  rendered into the injected context are recorded.
+- Persistent recall state in a separate `recall-state.json` (ids, turns,
+  timestamps, and counts only — never message text), pruned by
+  `retrieval.dedupeStateRetentionDays` (default `90`) and
+  `retrieval.dedupeStateMaxSessions` (default `500`); `0` disables the
+  corresponding limit. It survives plugin/DSH restarts and `index.sqlite`
+  deletion, and is safe to delete (dedupe history resets).
+- Retrieval `stats` now report `candidateCount`, `excludedSameSession`,
+  `excludedDedupe`, and `dedupeApplied`; the API status carries the three
+  exclusion counters. None of this is written into the injected context text.
+- Existing `config.json` files gain the new defaults automatically; nothing is
+  deleted or migrated.
 - Tests, documentation, and a CI workflow covering the plugin.
