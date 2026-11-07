@@ -137,7 +137,7 @@ rebuild/clear the index.
 - **`index.sqlite`**: safe to delete at any time; it is rebuilt from JSONL and
   the memory files.
 - **`recall-state.json`**: safe to delete at any time; only dedupe history is
-  lost (pairs become eligible again). It is recreated as needed.
+  lost (pairs and memories become eligible again). It is recreated as needed.
 - **`config.json`**: removing it resets configuration (including any stored API
   keys).
 
@@ -151,7 +151,7 @@ rebuild/clear the index.
 | Vectors not comparable | Dimension mismatch between query and index | Match `dimensions`/model; reindex after a model change. |
 | Rerank fails | Rerank endpoint down or misconfigured | Fix rerank config; the pipeline **falls back** to non-reranked results. |
 | Index not writable | SQLite unavailable / `initError` at startup | Check the data home is writable; verify SQLite can open/create `index.sqlite`. |
-| Turn dedupe not applied / history not recorded | `recall-state.json` missing, corrupt, or unwritable | Recall state is **fail-open**: a warning is logged, dedupe is skipped, and injection continues. Check the data home is writable; deleting the file resets dedupe history. |
+| Turn dedupe not applied / history not recorded | `recall-state.json` missing, corrupt, or unwritable | Recall state is **fail-open**: a warning is logged, dedupe is skipped, and injection continues. A memory write still succeeds; it is just not recorded for dedupe (and is skipped outright for subagent sessions or hosts without a turn projection). Check the data home is writable; deleting the file resets dedupe history. |
 | Memory change not recalled | Manual Markdown edit made after startup | There is no real-time watcher; restart/activate the plugin so the startup scan synchronizes `MEMORY.md` and the vectors. |
 
 All failure modes are **fail-open** on the read path: retrieval errors skip

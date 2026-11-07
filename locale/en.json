@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Context RAG",
-    "description": "Adds retrieval-augmented generation to DSH sessions: stores each turn's (user message, final assistant reply) pair in a human-readable JSONL store, indexes embeddings in SQLite, and injects related past turns retrieved from the current workspace (or all workspaces) as read-only context before each model step. Same-session recall is off by default and recently injected pairs are deduped by turn distance, with tunable settings (allowSameSession, dedupeTurns)."
+    "description": "Adds retrieval-augmented generation to DSH sessions: stores each turn's (user message, final assistant reply) pair in a human-readable JSONL store, indexes embeddings in SQLite, and injects related past turns and memories retrieved from the current workspace (or all workspaces) as read-only context before each model step. Same-session recall is off by default and recently recalled pairs and memories (including memory writes) are deduped by turn distance, with tunable settings (allowSameSession, dedupeTurns)."
   }
 }

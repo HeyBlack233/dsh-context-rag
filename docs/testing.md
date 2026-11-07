@@ -66,12 +66,12 @@ test/
 | `indexer` | Background worker: draining the outbox (pairs and memories), batching, retry. |
 | `render` | Building the injected context text from retrieved pairs and memories. |
 | `retrieval` | Query embedding, candidate scan over pairs and memories, scoring, and top-K selection. |
-| `recall-state` | Persistent turn-dedupe state: load/prune/record/eligibility, retention by days and max sessions, corrupt/missing-file handling, and atomic persistence. |
+| `recall-state` | Persistent turn-dedupe state: load/prune/record/remove/eligibility, retention by days and max sessions, corrupt/missing-file handling, and atomic persistence. |
 | `inject` | Dedupe per user message and attaching the injected context message. |
 | `memories` | Memory store: Markdown + YAML front matter, `MEMORY.md` index maintenance, `.forgotten` handling, name/content validation, and the startup sync scan. |
-| `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, and error mapping. |
+| `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, turn-dedupe recording on write and cleanup on forget, and error mapping. |
 | `api` | The host-facing HTTP API, trust checks, actions, and error mapping. |
-| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, workspace/all scope, same-session exclusion and turn dedupe, rerank fallback, disabled indexing, and render budget. |
+| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, and the no-icon contract. |
 | `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, form fields, theme tokens, and EN/ZH key parity. |
 
@@ -123,7 +123,9 @@ live session:
 10. **Check the recall filters** — with `allowSameSession` `false` (default),
     earlier pairs from the same session are not recalled; with
     `dedupeTurns` set, recently injected pairs are not re-injected within the
-    turn distance, and `recall-state.json` appears in the data home.
+    turn distance, and `recall-state.json` appears in the data home. After a
+    `memory_write`, confirm the written memory is not recalled again in the
+    same session until the turn window has passed.
 11. **Exercise the memory tools** — ask the assistant to save a note
     (`memory_write`), list memories (`memory_list`), read one (`memory_get`),
     and forget it (`memory_forget`). Confirm `<name>.md` appears in

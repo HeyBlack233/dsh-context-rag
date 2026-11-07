@@ -21,7 +21,9 @@ The plugin has two independent, asynchronous flows over the same store.
    source of truth), then enqueues an embedding job. The `memory_write` tool
    follows the same pattern: it writes the Markdown memory file and refreshes
    the `MEMORY.md` index (the file write is the commit point), then enqueues an
-   embedding job. A single background worker batches jobs, computes normalized
+   embedding job. A successful write is also recorded in `recall-state.json`
+   at the current turn, so turn dedupe treats the written memory as recently
+   recalled. A single background worker batches jobs, computes normalized
    vectors via an embedding API, and writes them into the SQLite index.
 2. **Read path (retrieval).** An `agent/pre-step` hook detects new direct user
    messages, embeds the query, scans the SQLite index for similar past pairs
@@ -47,12 +49,12 @@ rather than disrupting the turn.
 | `lib/embeddings.js` | Call the configured embedding API; produce normalized vectors. |
 | `lib/rerank.js` | Optional call to an OpenAI-compatible rerank endpoint. |
 | `lib/memories.js` | Memory store: read/write/forget Markdown memories, maintain `MEMORY.md` indexes, `.forgotten` handling, and the startup sync scan. |
-| `lib/memory-tools.js` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` agent tools. |
+| `lib/memory-tools.js` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` agent tools; records successful writes and clears forgotten memories in the turn-dedupe state. |
 | `lib/retrieval.js` | Query embedding, candidate scan over pairs and memories (global + current workspace), scoring, top-K selection, and turn dedupe. |
 | `lib/render.js` | Build the injected context text from retrieved pairs and memories. |
 | `lib/message.js` | Construct and manage context messages and their source metadata. |
 | `lib/inject.js` | Dedupe per user message, attach the injected context message, and record the actually rendered candidates for turn dedupe. |
-| `lib/recall-state.js` | Persistent turn-dedupe state: per-(session, pair) last turn, timestamp, and count; retention pruning; atomic persistence. |
+| `lib/recall-state.js` | Persistent turn-dedupe state: per-(session, pair) last turn, timestamp, and count; entry removal for forgotten memories; retention pruning; atomic persistence. |
 | `lib/api.js` | Plugin-internal API surface (services exposed to the host). |
 | `client.js` | Web config page presented in the Harness GUI. |
 
@@ -93,8 +95,9 @@ state is written on every change, so no shutdown flush is needed.
   deletion and is safe to delete itself (only dedupe history resets).
 - **Single writer.** Embedding computation and index writes go through one
   worker, keeping batching and ordering simple.
-- **Fail-open read path.** Retrieval errors never block the turn; recall-state
-  failures degrade to no turn dedupe, never to a failed step.
+- **Fail-open read path and bookkeeping.** Retrieval errors never block the
+  turn; recall-state failures degrade to no turn dedupe, never to a failed
+  step or a failed memory write.
 - **No external dependencies at runtime.** Embeddings come from a configurable
   HTTP endpoint; there is no external vector database. The reranker is optional.
 

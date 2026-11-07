@@ -11,8 +11,9 @@ notes under `memories/` with a `MEMORY.md` index, managed through the
 `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools — are
 recalled alongside conversation pairs from the global store and the current
 workspace. Recall is filtered by default: same-session pairs are excluded
-unless `allowSameSession` is enabled, and recently injected pairs are deduped
-by turn distance in injection mode, with the dedupe history kept in a separate
+unless `allowSameSession` is enabled, and recently recalled pairs and memories
+— injected or written via `memory_write` — are deduped by turn distance in
+injection mode, with the dedupe history kept in a separate
 `recall-state.json`.
 
 ## Documentation index

@@ -22,6 +22,7 @@ import { createRetriever } from "../lib/retrieval.js";
 import { createInjector } from "../lib/inject.js";
 import { createRecallState } from "../lib/recall-state.js";
 import { createMemoryStore } from "../lib/memories.js";
+import { registerMemoryTools } from "../lib/memory-tools.js";
 import { workspaceSlug } from "../lib/paths.js";
 import { renderInjection } from "../lib/render.js";
 import { readPairs } from "../lib/pairs.js";
@@ -776,6 +777,90 @@ test("memories: global + current workspace memories embed and recall; other work
   assert.ok(added[0].content[0].text.includes("Memory · workspace"), "the workspace memory entry must be rendered");
   assert.ok(added[0].content[0].text.includes("alpha global memory content"));
   assert.ok(added[0].content[0].text.includes("alpha work memory content"));
+});
+
+test("memories: memory_write counts as a recall at the current turn for turn dedupe", async (t) => {
+  const { db, indexer, retriever, memoryStore, recallState, configStore } = await makePipeline(t, {
+    patch: { retrieval: { allowSameSession: true, dedupeTurns: 5, topK: 10, candidateLimit: 10 } },
+    withMemoryStore: true,
+  });
+
+  // The memory tool resolves the current turn from the session projection.
+  const session = { id: "sess-write", header: { cwd: "/tmp/work" } };
+  const sessionProjections = {
+    stateOf(checkedSession, key) {
+      assert.equal(checkedSession, session);
+      if (key !== "turnBoundary") return undefined;
+      return {
+        openTurnStartSeq: 1,
+        lastStepStartSeq: 1,
+        lastStepBoundary: { kind: "start", seq: 1 },
+        lastTurn: 2,
+      };
+    },
+  };
+  const definitions = [];
+  const toolsCtx = {
+    tools: {
+      register(definition) {
+        definitions.push(definition);
+        return () => {};
+      },
+    },
+  };
+  registerMemoryTools(toolsCtx, {
+    memoryStore,
+    db,
+    indexer,
+    recallState,
+    sessionProjections,
+    configStore,
+  });
+
+  const write = definitions.find((definition) => definition.name === "memory_write");
+  const out = await write.execute(
+    { type: "global", name: "alpha-note", description: "Alpha note", content: "alpha memory content" },
+    { agent: { session }, signal: new AbortController().signal },
+  );
+  assert.equal(out.action, "created");
+  await indexer.pumpOnce();
+
+  const record = await memoryStore.get({ type: "global", name: "alpha-note" });
+  assert.equal(recallState.getLastTurn(session.id, record.pairId), 2, "the write is recorded at turn 2");
+
+  // Turn 3: written 1 turn ago; 3 - 2 = 1 < 5 -> the memory is excluded.
+  const early = await retriever.retrieve({
+    query: "alpha",
+    cwd: "/tmp/work",
+    sessionId: session.id,
+    turn: 3,
+    mode: "injection",
+  });
+  assert.equal(early.stats.dedupeApplied, true);
+  assert.equal(early.stats.excludedDedupe, 1);
+  assert.equal(early.pairs.some((pair) => pair.pairId === record.pairId), false);
+
+  // Dedupe is per session: another session still recalls the memory.
+  const other = await retriever.retrieve({
+    query: "alpha",
+    cwd: "/tmp/work",
+    sessionId: "sess-other",
+    turn: 3,
+    mode: "injection",
+  });
+  assert.equal(other.stats.excludedDedupe, 0);
+  assert.ok(other.pairs.some((pair) => pair.pairId === record.pairId));
+
+  // Turn 7: 7 - 2 = 5 >= 5 -> eligible again.
+  const later = await retriever.retrieve({
+    query: "alpha",
+    cwd: "/tmp/work",
+    sessionId: session.id,
+    turn: 7,
+    mode: "injection",
+  });
+  assert.equal(later.stats.excludedDedupe, 0);
+  assert.ok(later.pairs.some((pair) => pair.pairId === record.pairId));
 });
 
 test("memories: deleting the index row (tool flow) stops recall immediately", async (t) => {

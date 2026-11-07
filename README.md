@@ -28,11 +28,13 @@ Trajectory so you can see exactly what was retrieved and used.
 - **Same-session recall is off by default**: pairs from the current session are
   excluded unless you enable `allowSameSession`; forked/derived sessions count
   as different sessions.
-- **Turn-distance dedupe** for context injection: a pair is not re-injected
-  until `dedupeTurns` turns have passed (`0` disables turn dedupe; `-1` allows
-  each pair only once per session, ever). The bookkeeping lives in a separate,
+- **Turn-distance dedupe** for context injection: a pair or memory is not
+  recalled again until `dedupeTurns` turns have passed (`0` disables turn
+  dedupe; `-1` allows each candidate only once per session, ever). A successful
+  `memory_write` counts as a recall at the current turn, so a just-written
+  memory stays out of the recent window. The bookkeeping lives in a separate,
   persistent `recall-state.json`, pruned by `dedupeStateRetentionDays` and
-  `dedupeStateMaxSessions`.
+  `dedupeStateMaxSessions`; forgetting a memory clears its entries.
 - **Pre-step durable context injection** shown in the Trajectory.
 - **Persistent memories**: `memory_list` / `memory_get` / `memory_write` /
   `memory_forget` manage Markdown notes under `memories/global/` and
@@ -73,9 +75,9 @@ Defaults: `candidateLimit = 20`, `topK = 5`, `minScore = 0.40`,
 to `1.00` with two decimals.
 
 Recall defaults: `allowSameSession = false` (same-session recall off),
-`dedupeTurns = 5` (injection-only turn dedupe; `0` disables, `-1` = once per
-session ever), `dedupeStateRetentionDays = 90` and
-`dedupeStateMaxSessions = 500` (recall-state retention; `0` disables the
+`dedupeTurns = 5` (injection-only turn dedupe, also counting memory writes;
+`0` disables, `-1` = once per session ever), `dedupeStateRetentionDays = 90`
+and `dedupeStateMaxSessions = 500` (recall-state retention; `0` disables the
 corresponding limit).
 
 ## Data layout
@@ -97,7 +99,8 @@ Everything lives under `$DSH_HOME/context-rag`:
   to durably store the pair and enqueue its embedding.
 - **Memory write**: `memory_write` writes the Markdown file and refreshes the
   `MEMORY.md` index first (the file write is the commit point), then enqueues
-  the embedding through the same outbox.
+  the embedding through the same outbox and records the memory at the current
+  turn for turn dedupe.
 - **Pre-step read**: before the next model step, it retrieves candidates —
   conversation pairs plus global/current-workspace memories — and (optionally)
   reranks them, then injects the top results as a read-only context message

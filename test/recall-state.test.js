@@ -2,7 +2,7 @@
  * Tests for the persistent recall-state module in `lib/recall-state.js`.
  *
  * Covers schema/validation, persistence across instances, gap eligibility
- * (0 / -1 / distance), per-session isolation, record semantics, invalid
+ * (0 / -1 / distance), per-session isolation, record/remove semantics, invalid
  * inputs, retention by days and max sessions, atomic 0600 writes, and
  * fail-open behavior on unreadable/corrupt/unwritable files.
  *
@@ -362,6 +362,72 @@ test("recall-state: invalid record inputs are ignored", async (t) => {
   assert.equal(result.recorded, 1);
   assert.deepEqual(rs.stats(), { sessions: 1, entries: 1 });
   assert.equal(rs.getLastTurn("s", "p"), 1);
+});
+
+test("recall-state: remove clears a pair id from every session and prunes empties", async (t) => {
+  const dir = await makeTempDir();
+  t.after(() => cleanupTempDir(dir));
+  const file = join(dir, "recall-state.json");
+
+  const rs = createRecallState({ file });
+  rs.record({ sessionId: "s1", pairIds: ["p1", "p2"], turn: 2 });
+  rs.record({ sessionId: "s2", pairIds: ["p1"], turn: 5 });
+
+  // s2 held only p1, so it is pruned as empty in the same operation.
+  assert.deepEqual(rs.remove({ pairIds: ["p1"] }), { removed: 2, prunedSessions: 1 });
+  assert.equal(rs.getLastTurn("s1", "p1"), null);
+  assert.equal(rs.getLastTurn("s1", "p2"), 2, "unrelated entries are untouched");
+  assert.equal(rs.getLastTurn("s2", "p1"), null);
+  assert.equal(rs.isEligible({ sessionId: "s1", pairId: "p2", turn: 3, gap: 2 }), false);
+  assert.deepEqual(rs.stats(), { sessions: 1, entries: 1 });
+
+  const persisted = await readState(file);
+  assert.equal(Object.hasOwn(persisted.sessions, "s2"), false);
+  assert.equal(Object.hasOwn(persisted.sessions.s1.entries, "p1"), false);
+
+  // Already gone: a no-op, no rewrite.
+  assert.deepEqual(rs.remove({ pairIds: ["p1"] }), { removed: 0, prunedSessions: 0 });
+
+  // Removing the last entry drops the session and persists the empty state.
+  assert.deepEqual(rs.remove({ pairIds: ["p2"] }), { removed: 1, prunedSessions: 1 });
+  assert.deepEqual(rs.stats(), { sessions: 0, entries: 0 });
+  assert.deepEqual(await readState(file), { version: 1, sessions: {} });
+});
+
+test("recall-state: remove ignores invalid or unknown pair ids without rewriting", async (t) => {
+  const dir = await makeTempDir();
+  t.after(() => cleanupTempDir(dir));
+  const file = join(dir, "recall-state.json");
+
+  const rs = createRecallState({ file });
+  rs.record({ sessionId: "s1", pairIds: ["p1"], turn: 2 });
+  const before = await readFile(file, "utf8");
+
+  const zero = { removed: 0, prunedSessions: 0 };
+  assert.deepEqual(rs.remove(), zero);
+  assert.deepEqual(rs.remove({}), zero);
+  assert.deepEqual(rs.remove({ pairIds: [] }), zero);
+  assert.deepEqual(rs.remove({ pairIds: null }), zero);
+  assert.deepEqual(rs.remove({ pairIds: ["", 123, null] }), zero);
+  assert.deepEqual(rs.remove({ pairIds: ["nope"] }), zero);
+  assert.equal(await readFile(file, "utf8"), before, "no removal must not rewrite the file");
+  assert.equal(rs.getLastTurn("s1", "p1"), 2);
+});
+
+test("recall-state: remove never throws on write failure", async (t) => {
+  const dir = await makeTempDir();
+  t.after(() => cleanupTempDir(dir));
+  // The destination path's parent is a regular file, so save() fails.
+  const blocker = join(dir, "blocker");
+  await writeFile(blocker, "x");
+  const file = join(blocker, "recall-state.json");
+
+  const { logger, warns } = warnLogger();
+  const rs = createRecallState({ file, logger });
+  rs.record({ sessionId: "s1", pairIds: ["p1"], turn: 1 });
+  const result = rs.remove({ pairIds: ["p1"] });
+  assert.deepEqual(result, { removed: 0, prunedSessions: 0 });
+  assert.ok(warns.length >= 1, "expected a warning for the failed write");
 });
 
 test("recall-state: retention by days uses injectable now and is strict", async (t) => {

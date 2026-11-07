@@ -36,10 +36,11 @@ Release Date: TBD
   (default `false`) excludes pairs from the current session in all recall modes;
   set it to `true` to allow them. Forked/derived sessions count as different
   sessions.
-- Injection-only turn dedupe: `retrieval.dedupeTurns` (default `5`) keeps a pair
-  from being re-injected until `T - L >= dedupeTurns`; `0` disables turn dedupe
-  and `-1` allows each pair at most once per session, ever. Only pairs actually
-  rendered into the injected context are recorded.
+- Injection-only turn dedupe: `retrieval.dedupeTurns` (default `5`) keeps a
+  pair or memory from being recalled again until `T - L >= dedupeTurns`; `0`
+  disables turn dedupe and `-1` allows each candidate at most once per session,
+  ever. Only candidates actually rendered into the injected context are
+  recorded, plus memories written by `memory_write` (see below).
 - Persistent recall state in a separate `recall-state.json` (ids, turns,
   timestamps, and counts only — never message text), pruned by
   `retrieval.dedupeStateRetentionDays` (default `90`) and
@@ -68,6 +69,13 @@ Release Date: TBD
   expected in English; content may be in the user's language. The tool lists
   the index before writing to avoid semantic duplicates and updates the same
   name for the same topic.
+- **Memory writes count toward turn dedupe**: a successful `memory_write`
+  (`created` or `updated`) records the memory's `pairId` at the current turn,
+  so a just-written memory is not recalled again in the writing session until
+  `retrieval.dedupeTurns` has passed — exactly like an injection. Subagent
+  sessions and hosts without a current-turn projection skip the record
+  (fail-open; the write still succeeds). `memory_forget` clears the memory's
+  entries from every session's recall history.
 - **Memory forgetting**: `memory_forget` runs only on explicit user request,
   matches `name` + `description` exactly, renames the file to
   `<name>.forgotten`, and removes it from the `MEMORY.md` index and SQLite

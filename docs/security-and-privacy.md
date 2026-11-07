@@ -28,7 +28,7 @@ counts** for turn dedupe — it never contains message text (see
 [storage-and-data-model.md](storage-and-data-model.md)). Its retention is
 bounded by `retrieval.dedupeStateRetentionDays` and
 `retrieval.dedupeStateMaxSessions`, and it is safe to delete at any time:
-deleting it only resets dedupe history (pairs become eligible again) and never
+deleting it only resets dedupe history (pairs and memories become eligible again) and never
 touches the JSONL log or the index.
 
 ## API keys

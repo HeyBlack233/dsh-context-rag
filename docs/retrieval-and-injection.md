@@ -24,7 +24,7 @@ user message**; subsequent steps in the same turn do not re-inject.
    query recalls memories from `global` plus the current workspace (see
    [Memory recall](#memory-recall)).
 3. **Turn dedupe (injection mode only)** — before scoring, drop candidates that
-   were injected into the current session too recently, per
+   were recalled into the current session too recently, per
    `retrieval.dedupeTurns` (see [Recall filters](#recall-filters)). This
    applies to pair and memory candidates alike.
 4. **Score** — cosine similarity is computed as the dot product of the
@@ -50,7 +50,7 @@ differ in scope:
 | Filter | Mode | Behavior |
 | --- | --- | --- |
 | Same-session exclusion | **All** recall modes, **conversation pairs only** | When `retrieval.allowSameSession` is `false` (default), pairs whose `sessionId` equals the current session id are excluded during the candidate scan. Set it to `true` to allow same-session recall. Only exact session ids match — forked/derived sessions are different sessions. Memories have no session and are never excluded by this filter. |
-| Turn dedupe | **Context injection only** | Per current session, a pair or memory previously injected at turn `L` is eligible again only when `T - L >= retrieval.dedupeTurns` (default `5`). `0` disables turn dedupe; `-1` allows each candidate at most once per session, ever. The filter runs **before** scoring/rerank/topK so eligible candidates can fill the `topK` slots. |
+| Turn dedupe | **Context injection only** | Per current session, a pair or memory last recalled at turn `L` is eligible again only when `T - L >= retrieval.dedupeTurns` (default `5`). `0` disables turn dedupe; `-1` allows each candidate at most once per session, ever. The filter runs **before** scoring/rerank/topK so eligible candidates can fill the `topK` slots. |
 
 ### Memory recall
 
@@ -66,23 +66,37 @@ apply to both: cosine scoring, `scanLimit`, `candidateLimit` (rerank
   still recalls global memories, and `scope = "all"` does not broaden memory
   recall beyond the current workspace.
 - **Same-session exclusion does not apply to memories** (they belong to no
-  session); turn dedupe does, and memory candidates injected into the current
-  session are recorded in `recall-state.json` like pair candidates.
+  session); turn dedupe does. Memory candidates injected into the current
+  session are recorded in `recall-state.json` like pair candidates, and a
+  successful `memory_write` records the written memory at the current turn too
+  (see [Bookkeeping](#bookkeeping-records-injections-and-memory-writes)).
 - Memory results render inside the same framed message as pairs, with the same
   `<` escaping and untrusted-background warning. Each memory entry is headed
   `[n] Memory · global|workspace · <name> · score: <score>` followed by its
   content (see [security-and-privacy.md](security-and-privacy.md)).
 
-### Bookkeeping records only what is actually injected
+### Bookkeeping records injections and memory writes
 
-Turn-dedupe history is updated only for candidates that were **actually
-rendered into the injected context message** — that is, pairs and memories
-that survived the `maxContextChars` budget (including a truncated first
-entry). Candidates that were merely selected or then dropped are never
-recorded. Recording happens even when `dedupeTurns` is `0`, so raising the
-value later applies to already-recalled candidates. The bookkeeping key is
-`(current sessionId, pairId)`, so a candidate from another session can still
-be deduped in the current session.
+Turn-dedupe history is updated in two cases.
+
+1. **Injection.** Only candidates that were **actually rendered into the
+   injected context message** are recorded — that is, pairs and memories that
+   survived the `maxContextChars` budget (including a truncated first entry).
+   Candidates that were merely selected or then dropped are never recorded.
+2. **Memory write.** A successful `memory_write` (`created` or `updated`)
+   records the written memory's `pairId` at the current turn for the calling
+   session, so turn dedupe treats it as if it had just been injected. This
+   affects new and overwritten memories alike. Subagent sessions are skipped
+   (they do not inject), and the record is skipped when the current turn cannot
+   be resolved or `recall-state.json` is unavailable; the write itself still
+   succeeds.
+
+Recording happens even when `dedupeTurns` is `0`, so raising the value later
+applies to already-recalled candidates and already-written memories. The
+bookkeeping key is `(current sessionId, pairId)`, so a candidate from another
+session can still be deduped in the current session. When a memory is forgotten
+via `memory_forget`, its entries are removed from every session's history, so a
+later memory recreated with the same name is not suppressed by an old record.
 
 ### Recall state is separate and fail-open
 

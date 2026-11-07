@@ -49,7 +49,7 @@ Optional; disabled by default.
 | `injectionEnabled` | `true` | Whether to inject retrieved context at all. |
 | `scanLimit` | `5000` | Max index rows examined during the scan. |
 | `allowSameSession` | `false` | Whether pairs from the current session are eligible. `false` excludes pairs whose `sessionId` equals the current session id from **all** recall modes; `true` allows them. Only exact session ids match — forked/derived sessions are different sessions. |
-| `dedupeTurns` | `5` | Turn-distance dedupe for **context injection only**: a pair last injected at turn `L` is eligible again only when `T - L >= dedupeTurns`. `0` disables turn dedupe; `-1` allows each pair at most once per session, ever. Filtering happens before scoring/rerank/topK. |
+| `dedupeTurns` | `5` | Turn-distance dedupe for **context injection only**: a pair or memory last recalled at turn `L` (injected, or written by `memory_write`) is eligible again only when `T - L >= dedupeTurns`. `0` disables turn dedupe; `-1` allows each candidate at most once per session, ever. Filtering happens before scoring/rerank/topK. |
 | `dedupeStateRetentionDays` | `90` | Sessions in the recall-state file are dropped when their latest recall is older than this many days; `0` disables the time limit. |
 | `dedupeStateMaxSessions` | `500` | Keep at most this many most-recently-active sessions in the recall-state file; `0` disables the count limit. |
 
@@ -58,6 +58,9 @@ Recall filters:
 - `allowSameSession` is a **general** retrieval filter: it applies to every recall
   mode (context injection today, and future active recall modes). `dedupeTurns`
   and its bookkeeping are **injection-only**.
+- A successful `memory_write` also counts as a recall at the current turn, so
+  a just-written memory is not injected again until the window has passed.
+  Forgetting a memory clears its entries from the history.
 - Turn-dedupe bookkeeping lives in a **separate state file**,
   `recall-state.json` under the data home (see
   [storage-and-data-model.md](storage-and-data-model.md)). It stores only

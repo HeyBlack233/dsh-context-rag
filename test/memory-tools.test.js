@@ -110,6 +110,52 @@ function makeIndexer() {
   return { wakes, wake() { wakes.push(1); } };
 }
 
+/** Fake recall-state store recording `record` / `remove` calls. */
+function makeRecallState({ failRecord = false, failRemove = false } = {}) {
+  const calls = { record: [], remove: [] };
+  return {
+    calls,
+    record(options) {
+      calls.record.push(options);
+      if (failRecord) throw new Error("record failed");
+      return { recorded: options.pairIds.length, prunedSessions: 0, prunedEntries: 0 };
+    },
+    remove(options) {
+      calls.remove.push(options);
+      if (failRemove) throw new Error("remove failed");
+      return { removed: options.pairIds.length, prunedSessions: 0 };
+    },
+  };
+}
+
+/** Fake session-projection registry exposing `turnBoundary` for one turn. */
+function makeSessionProjections(turn, { open = true, throwOnRead = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    stateOf(session, key) {
+      calls.push({ session, key });
+      if (throwOnRead) throw new Error("projection unavailable");
+      if (key !== "turnBoundary") return undefined;
+      return open
+        ? { openTurnStartSeq: 1, lastStepStartSeq: 1, lastStepBoundary: { kind: "start", seq: 1 }, lastTurn: turn }
+        : { openTurnStartSeq: null, lastStepStartSeq: null, lastStepBoundary: null, lastTurn: turn };
+    },
+  };
+}
+
+/** Fake config store returning retrieval prune limits. */
+function makeConfigStore(overrides = {}) {
+  const calls = [];
+  return {
+    calls,
+    get() {
+      calls.push(1);
+      return { retrieval: { dedupeStateRetentionDays: 7, dedupeStateMaxSessions: 9, ...overrides } };
+    },
+  };
+}
+
 /** Fake tools registry capturing registered definitions. */
 function makeTools() {
   const definitions = [];
@@ -141,14 +187,23 @@ function makeDeps(overrides = {}) {
     memoryStore: pick("memoryStore", makeMemoryStore()),
     db: pick("db", makeDb()),
     indexer: pick("indexer", makeIndexer()),
+    recallState: pick("recallState", null),
+    sessionProjections: pick("sessionProjections", null),
     configStore: pick("configStore", null),
+    logger: pick("logger", { warn() {} }),
   };
 }
 
 /** Fake execution context for a session whose working directory is `cwd`. */
-function execFor(cwd) {
+function execFor(cwd, { sessionId = "s1", origin, agentId = "agent-1" } = {}) {
+  const header = { cwd };
+  if (origin !== undefined) header.origin = origin;
+  const session = { header };
+  if (sessionId !== null) session.id = sessionId;
+  const agent = { session };
+  if (agentId !== null) agent.id = agentId;
   return {
-    agent: { session: { header: { cwd } } },
+    agent,
     signal: new AbortController().signal,
   };
 }
@@ -357,6 +412,123 @@ function execWithoutAgent() {
     assert.equal(memoryStore.calls.write[0].cwd, "/tmp/a");
   });
 
+  test("memory_write records created and updated memories as recalls at the current turn", async () => {
+    const memoryStore = makeMemoryStore();
+    const recallState = makeRecallState();
+    const sessionProjections = makeSessionProjections(3);
+    const configStore = makeConfigStore();
+    const tools = registerTools(makeDeps({ memoryStore, recallState, sessionProjections, configStore }));
+    const write = tools.byName("memory_write");
+    const args = { type: "global", name: "project_notes", description: "Project conventions", content: "Use tabs." };
+
+    const created = await write.execute(args, execFor("/tmp/a"));
+    assert.equal(created.action, "created");
+    assert.equal(recallState.calls.record.length, 1);
+    assert.deepEqual(recallState.calls.record[0], {
+      sessionId: "s1",
+      turn: 3,
+      pairIds: ["mem-1"],
+      retentionDays: 7,
+      maxSessions: 9,
+    });
+    assert.deepEqual(sessionProjections.calls[0].key, "turnBoundary");
+
+    // An overwrite of the same name records the same pair id again, so the
+    // updated memory also stays out of the recent window.
+    const updated = await write.execute({ ...args, content: "Use spaces." }, execFor("/tmp/a"));
+    assert.equal(updated.action, "updated");
+    assert.equal(recallState.calls.record.length, 2);
+    assert.deepEqual(recallState.calls.record[1], recallState.calls.record[0]);
+  });
+
+  test("memory_write records even when turn dedupe is disabled, with default prune limits", async () => {
+    const recallState = makeRecallState();
+    const sessionProjections = makeSessionProjections(1);
+    const configStore = makeConfigStore({ dedupeTurns: 0 });
+    const tools = registerTools(makeDeps({ recallState, sessionProjections, configStore }));
+
+    await tools.byName("memory_write").execute(
+      { type: "global", name: "note", description: "Note", content: "Body" },
+      execFor("/tmp/a"),
+    );
+    assert.equal(recallState.calls.record.length, 1, "recording is independent of dedupeTurns");
+    assert.equal(recallState.calls.record[0].turn, 1);
+    assert.equal(recallState.calls.record[0].retentionDays, 7);
+    assert.equal(recallState.calls.record[0].maxSessions, 9);
+  });
+
+  test("memory_write skips recording when the turn or recall state is unavailable", async () => {
+    const recallState = makeRecallState();
+    const writeArgs = { type: "global", name: "note", description: "Note", content: "Body" };
+
+    // No projection registry -> no record, write still succeeds.
+    let tools = registerTools(makeDeps({ recallState }));
+    await tools.byName("memory_write").execute(writeArgs, execFor("/tmp/a"));
+    assert.equal(recallState.calls.record.length, 0);
+
+    // No recall state -> no record.
+    tools = registerTools(makeDeps({ sessionProjections: makeSessionProjections(3) }));
+    await tools.byName("memory_write").execute(writeArgs, execFor("/tmp/a"));
+    assert.equal(recallState.calls.record.length, 0, "no recall state");
+
+    // Closed turn -> no record.
+    tools = registerTools(makeDeps({ recallState, sessionProjections: makeSessionProjections(3, { open: false }) }));
+    await tools.byName("memory_write").execute(writeArgs, execFor("/tmp/a"));
+    assert.equal(recallState.calls.record.length, 0, "closed turn");
+
+    // Projection read failure -> no record.
+    tools = registerTools(makeDeps({ recallState, sessionProjections: makeSessionProjections(3, { throwOnRead: true }) }));
+    await tools.byName("memory_write").execute(writeArgs, execFor("/tmp/a"));
+    assert.equal(recallState.calls.record.length, 0, "projection failure");
+
+    // Missing session id -> no record.
+    tools = registerTools(makeDeps({ recallState, sessionProjections: makeSessionProjections(3) }));
+    await tools
+      .byName("memory_write")
+      .execute(writeArgs, execFor("/tmp/a", { sessionId: null, agentId: null }));
+    assert.equal(recallState.calls.record.length, 0, "missing session id");
+  });
+
+  test("memory_write skips recording for subagent sessions", async () => {
+    const recallState = makeRecallState();
+    const tools = registerTools(
+      makeDeps({ recallState, sessionProjections: makeSessionProjections(2) }),
+    );
+    await tools.byName("memory_write").execute(
+      { type: "global", name: "note", description: "Note", content: "Body" },
+      execFor("/tmp/a", { origin: "subagent" }),
+    );
+    assert.equal(recallState.calls.record.length, 0);
+  });
+
+  test("memory_write never fails when recall recording fails", async () => {
+    const recallState = makeRecallState({ failRecord: true });
+    const warns = [];
+    const logger = { warn: (message) => warns.push(String(message)) };
+    const tools = registerTools(
+      makeDeps({ recallState, sessionProjections: makeSessionProjections(2), logger }),
+    );
+
+    const out = await tools.byName("memory_write").execute(
+      { type: "global", name: "note", description: "Note", content: "Body" },
+      execFor("/tmp/a"),
+    );
+    assert.deepEqual(out, { action: "created", type: "global", name: "note", queued: true });
+    assert.equal(recallState.calls.record.length, 1);
+    assert.ok(warns.some((warning) => /memory recall-state record failed/.test(warning)));
+  });
+
+  test("memory_write records with default prune limits when no config store is available", async () => {
+    const recallState = makeRecallState();
+    const tools = registerTools(makeDeps({ recallState, sessionProjections: makeSessionProjections(4) }));
+    await tools.byName("memory_write").execute(
+      { type: "global", name: "note", description: "Note", content: "Body" },
+      execFor("/tmp/a"),
+    );
+    assert.equal(recallState.calls.record[0].retentionDays, 90);
+    assert.equal(recallState.calls.record[0].maxSessions, 500);
+  });
+
   test("memory_write rejects invalid names and missing db/indexer without writing", async () => {
     const memoryStore = makeMemoryStore();
     const args = { type: "global", name: "bad name!", description: "d", content: "c" };
@@ -422,6 +594,48 @@ function execWithoutAgent() {
     assert.equal(forget.output.render({}, removed)[0].text.includes("WB-SECRET"), false);
     assert.equal(forget.output.render({}, mismatch)[0].text.includes("WB-SECRET"), false);
     assert.ok(forget.output.render({}, mismatch)[0].text.includes("nothing was deleted"));
+  });
+
+  test("memory_forget clears the forgotten memory from every session's turn history", async () => {
+    const memoryStore = makeMemoryStore([
+      { pairId: "w1", type: "workspace", cwd: "/tmp/a", name: "beta", description: "workspace beta", content: "WB" },
+    ]);
+    const db = makeDb();
+    const recallState = makeRecallState();
+    const tools = registerTools(makeDeps({ memoryStore, db, recallState }));
+    const forget = tools.byName("memory_forget");
+
+    // A non-match removes nothing from the index or the recall history.
+    await forget.execute(
+      { type: "workspace", name: "beta", description: "different" },
+      execFor("/tmp/a"),
+    );
+    assert.equal(recallState.calls.remove.length, 0);
+
+    const removed = await forget.execute(
+      { type: "workspace", name: "beta", description: "workspace beta" },
+      execFor("/tmp/a"),
+    );
+    assert.equal(removed.removed, true);
+    assert.deepEqual(recallState.calls.remove, [{ pairIds: ["w1"] }]);
+  });
+
+  test("memory_forget never fails when recall history cleanup fails", async () => {
+    const memoryStore = makeMemoryStore([
+      { pairId: "w1", type: "workspace", cwd: "/tmp/a", name: "beta", description: "workspace beta", content: "WB" },
+    ]);
+    const recallState = makeRecallState({ failRemove: true });
+    const warns = [];
+    const logger = { warn: (message) => warns.push(String(message)) };
+    const tools = registerTools(makeDeps({ memoryStore, recallState, logger }));
+
+    const out = await tools.byName("memory_forget").execute(
+      { type: "workspace", name: "beta", description: "workspace beta" },
+      execFor("/tmp/a"),
+    );
+    assert.deepEqual(out, { removed: true, type: "workspace", name: "beta" });
+    assert.equal(recallState.calls.remove.length, 1);
+    assert.ok(warns.some((warning) => /memory recall-state remove failed/.test(warning)));
   });
 
   test("memory_forget fails clearly when the index database is unavailable", async () => {

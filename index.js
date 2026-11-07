@@ -42,6 +42,27 @@ function messageOf(err) {
 }
 
 /**
+ * Read an optional host service without failing when it is absent.
+ *
+ * @param {object} ctx - Host plugin context.
+ * @param {string} name - Service name.
+ * @returns {object|null} The service, or `null` when unavailable.
+ */
+function optionalService(ctx, name) {
+  try {
+    // Cordis contexts expose `get(name, false)` to read a service without
+    // declaring an inject dependency; the plain property read is a fallback
+    // for lightweight fake contexts used by tests.
+    if (ctx && typeof ctx.get === "function") {
+      return ctx.get(name, false) ?? null;
+    }
+    return ctx?.[name] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Activate the plugin. Only `config.home` is honored; unknown keys are
  * ignored. Registration never blocks on network or index reconciliation.
  *
@@ -225,7 +246,17 @@ export function apply(ctx, config = {}) {
   // tools — it never affects the rest of the plugin. A missing index db or
   // indexer is left to the tools to fail clearly at call time.
   if (memoryStore) {
-    const memoryDeps = { memoryStore, db, indexer, configStore };
+    const memoryDeps = {
+      memoryStore,
+      db,
+      indexer,
+      configStore,
+      recallState,
+      // The `turnBoundary` projection lives in this core service; when a host
+      // does not expose it, memory writes simply are not recorded for dedupe.
+      sessionProjections: optionalService(ctx, "sessionProjections"),
+      logger,
+    };
     try {
       if (typeof ctx.inject === "function") {
         ctx.inject(["tools"], (toolsCtx) => {

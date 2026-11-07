@@ -46,7 +46,8 @@ The page is split into the following sections:
     `rerankMinScore`, `maxContextChars`, `timeoutMs`, `dedupeTurns`,
     `dedupeStateRetentionDays`, `dedupeStateMaxSessions`. A short help
     paragraph below the rows explains the special values: `dedupeTurns` of `0`
-    disables turn dedupe and `-1` allows each pair only once per session, and
+    disables turn dedupe, `-1` allows each candidate (pair or memory) only
+    once per session, successful memory writes count as a recall, and
     retention values of `0` disable that limit.
   - **Indexing** — `enabled`, `pollIntervalMs`, `retryDelayMs`, `maxAttempts`.
 - **Advanced JSON** — an editable JSON view of the whole config for fields

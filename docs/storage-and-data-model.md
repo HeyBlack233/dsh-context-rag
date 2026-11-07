@@ -166,10 +166,11 @@ Key/value store for index bookkeeping (e.g. schema version, worker state).
 
 ## Recall state (recall-state.json)
 
-`recall-state.json` holds the turn-dedupe bookkeeping for context injection
-(see [retrieval-and-injection.md](retrieval-and-injection.md)). It is a
-separate file from `index.sqlite` and is written atomically with mode `0600`.
-It stores **only ids, turns, timestamps, and counts — never message text**.
+`recall-state.json` holds the turn-dedupe bookkeeping for context injection and
+memory writes (see [retrieval-and-injection.md](retrieval-and-injection.md)).
+It is a separate file from `index.sqlite` and is written atomically with mode
+`0600`. It stores **only ids, turns, timestamps, and counts — never message
+text**.
 
 Schema (JSON, version 1):
 
@@ -187,9 +188,13 @@ Schema (JSON, version 1):
 }
 ```
 
-- Per (session id, pair id), `lastTurn` is the turn the pair was last injected,
-  `lastRecallAt` when that happened, and `count` how many times it has been
-  injected. `lastActiveAt` is the session's most recent recall activity.
+- Per (session id, pair id), `lastTurn` is the turn of the last recall — an
+  injection or a successful `memory_write` — `lastRecallAt` when that happened,
+  and `count` how many times the candidate has been recorded. `lastActiveAt`
+  is the session's most recent recall activity.
+- **Forgetting clears entries.** `memory_forget` removes the forgotten memory's
+  `pairId` from every session before deleting it, so a later memory recreated
+  with the same name and scope starts with a clean turn history.
 - **Retention**: cleanup runs on load and after every write. Sessions whose
   latest recall is older than `retrieval.dedupeStateRetentionDays` (default
   `90`) are dropped, and at most `retrieval.dedupeStateMaxSessions` (default
@@ -198,11 +203,12 @@ Schema (JSON, version 1):
 - **Persistence**: the file survives plugin/DSH restarts and deletion of
   `index.sqlite` — the two stores are independent.
 - **Safe to delete**: deleting `recall-state.json` merely resets dedupe history
-  (pairs become eligible again); nothing else is affected. It is **not** part
-  of the JSONL source of truth.
+  (pairs and memories become eligible again); nothing else is affected. It is
+  **not** part of the JSONL source of truth.
 - **Fail-open**: if the file is missing, corrupt, or unwritable, the store
   warns and continues with empty state, so retrieval/injection keeps working
-  without turn dedupe.
+  without turn dedupe. Memory writes still succeed; they are simply not
+  recorded.
 
 ## Write path
 
@@ -216,9 +222,11 @@ The JSONL write is the commit point; the index follows asynchronously.
 
 Memory writes follow the same commit-point rule: `memory_write` writes (or
 overwrites) the `<name>.md` file and refreshes the `MEMORY.md` index, then
-enqueues the memory's embedding through the same `outbox`. `memory_forget`
-renames the file to `<name>.forgotten`, removes the `MEMORY.md` entry, and
-deletes the SQLite vector, while keeping the file on disk for history.
+enqueues the memory's embedding through the same `outbox` and records the
+memory at the current turn in `recall-state.json` (turn dedupe) when the host
+exposes the current turn. `memory_forget` renames the file to `<name>.forgotten`,
+removes the `MEMORY.md` entry and its recall-state entries, and deletes the
+SQLite vector, while keeping the file on disk for history.
 
 ## Indexing worker
 
