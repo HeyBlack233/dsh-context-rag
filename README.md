@@ -45,7 +45,9 @@ Trajectory so you can see exactly what was retrieved and used.
   `<name>.forgotten`, keeping its history while removing it from the index and
   SQLite.
 - **Configure panel** on the plugin's page in the DSH Web GUI (above the
-  **Components** section), with **English and Simplified Chinese** UI.
+  **Components** section), split into **Dashboard** (status and index
+  maintenance) and **Configuration** (settings, advanced JSON, and save/test
+  actions) tabs, with **English and Simplified Chinese** UI.
 
 ## Install
 

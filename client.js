@@ -46,12 +46,89 @@ window.__ModuleLoader__.load({
     // Short alias to keep the JSX-free tree readable.
     const el = (tag, props, ...children) => React.createElement(tag, props, ...children);
 
+    // Tab ids are shared by the tab buttons and their panels for aria links.
+    const tabDomId = (id) => "dscr-tab-" + id;
+    const panelDomId = (id) => "dscr-panel-" + id;
+    const TAB_IDS = ["dashboard", "configuration"];
+    const TAB_STORAGE_KEY = "dsh-context-rag:tab";
+
+    function storedTab() {
+      try {
+        const value = window.localStorage.getItem(TAB_STORAGE_KEY);
+        return TAB_IDS.includes(value) ? value : "dashboard";
+      } catch {
+        return "dashboard";
+      }
+    }
+
+    function rememberTab(id) {
+      try {
+        window.localStorage.setItem(TAB_STORAGE_KEY, id);
+      } catch {
+        // Storage may be unavailable (private mode); the tab still works.
+      }
+    }
+
+    // Index size in a compact human-readable form. Unit labels are translated
+    // so every user-visible string stays localizable.
+    function formatBytes(value, t) {
+      const units = ["unitB", "unitKB", "unitMB", "unitGB"];
+      if (!Number.isFinite(value) || value <= 0) return "0 " + t(units[0]);
+      let size = value;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+      }
+      return (unit === 0 ? String(size) : size.toFixed(1)) + " " + t(units[unit]);
+    }
+
+    // Accessible tab bar: arrow keys, Home, and End move and activate tabs.
+    function TabBar({ tabs, active, onChange, t }) {
+      const onKeyDown = (event) => {
+        const index = tabs.findIndex((tab) => tab.id === active);
+        if (index < 0) return;
+        let next = null;
+        if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+        else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        if (next === null) return;
+        event.preventDefault();
+        const tab = tabs[next];
+        onChange(tab.id);
+        // Focus moves to the newly active tab; its panel follows below.
+        const target = event.currentTarget.querySelector("#" + tabDomId(tab.id));
+        if (target) target.focus();
+      };
+      return el("div", {
+        className: "dscr-tabs",
+        role: "tablist",
+        "aria-label": t("tabsLabel"),
+        onKeyDown,
+      }, ...tabs.map((tab) => el("button", {
+        key: tab.id,
+        id: tabDomId(tab.id),
+        className: "dscr-tab" + (active === tab.id ? " dscr-tab-active" : ""),
+        type: "button",
+        role: "tab",
+        "aria-selected": active === tab.id,
+        "aria-controls": panelDomId(tab.id),
+        tabIndex: active === tab.id ? 0 : -1,
+        "aria-label": tab.dirty ? t(tab.labelKey) + ", " + t("unsaved") : undefined,
+        onClick: () => onChange(tab.id),
+      }, t(tab.labelKey), tab.dirty ? el("span", { className: "dscr-tab-dot", "aria-hidden": "true" }) : null)));
+    }
+
     function ConfigPage({ t }) {
       const [status, setStatus] = React.useState(null);
       const [configText, setConfigText] = React.useState("");
+      const [savedText, setSavedText] = React.useState("");
       const [busy, setBusy] = React.useState("");
       const [banner, setBanner] = React.useState(null);
       const [confirmClear, setConfirmClear] = React.useState(false);
+      const [activeTab, setActiveTab] = React.useState(storedTab);
+      const [advancedOpen, setAdvancedOpen] = React.useState(false);
 
       const parsedConfig = () => {
         try { return JSON.parse(configText) || {}; } catch { return null; }
@@ -78,8 +155,10 @@ window.__ModuleLoader__.load({
         setBusy("status");
         try {
           const value = await call("status");
+          const text = JSON.stringify(publicConfig(value && value.config), null, 2);
           setStatus(value);
-          setConfigText(JSON.stringify(publicConfig(value && value.config), null, 2));
+          setConfigText(text);
+          setSavedText(text);
         } catch (err) {
           setBanner({ kind: "error", text: err.message });
         } finally {
@@ -90,6 +169,17 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         reload();
       }, [reload]);
+
+      // Unsaved edits are detected against the last loaded/saved snapshot, so
+      // switching tabs never loses them (the text stays in the parent state).
+      const dirty = configText !== savedText;
+      const selectTab = (id) => {
+        if (id === activeTab) return;
+        // Leaving Dashboard disarms the two-click clear confirmation.
+        if (activeTab === "dashboard") setConfirmClear(false);
+        setActiveTab(id);
+        rememberTab(id);
+      };
 
       const save = async () => {
         let parsed;
@@ -167,7 +257,6 @@ window.__ModuleLoader__.load({
       const model = embed.model || t("unknown");
       const dim = counts.dim ?? t("unknown");
 
-      const stat = (label, value) => el("div", { className: "dscr-stat" }, el("div", { className: "dscr-stat-value" }, value), el("div", { className: "dscr-stat-label" }, label));
       const field = (label, value) => el("div", { className: "dscr-field" }, el("span", { className: "dscr-field-label" }, label), el("span", { className: "dscr-field-value" }, value));
       const btn = (label, onClick) => el("button", { className: "dscr-btn", type: "button", disabled, onClick }, label);
       const bannerNode = banner ? el("div", { className: "dscr-banner" + (banner.kind === "error" ? " dscr-banner-error" : ""), role: "status", "aria-live": "polite" }, el("strong", null, banner.kind === "error" ? t("error") : t("ok")), " " + banner.text) : null;
@@ -287,32 +376,83 @@ window.__ModuleLoader__.load({
         ]),
       ];
 
-      return el("div", { className: "dscr-page" },
-        el("div", { className: "dscr-card", "aria-label": t("title") },
-          el("h2", { className: "dscr-title" }, t("title")),
-          el("div", { className: "dscr-grid" },
-            stat(t("pairCount"), counts.pairCount ?? 0),
-            stat(t("indexedCount"), counts.indexedCount ?? 0),
-            stat(t("pendingCount"), counts.pendingCount ?? 0),
-            stat(t("errorCount"), counts.errorCount ?? 0)),
+      // The strip stays visible on both tabs, so the index counts remain at
+      // hand while tuning retrieval settings.
+      const stripStat = (label, value) =>
+        el("div", { className: "dscr-strip-stat" },
+          el("span", { className: "dscr-strip-value" }, value),
+          el("span", { className: "dscr-strip-label" }, label));
+
+      const statusStrip = el("div", { className: "dscr-strip", "aria-label": t("statusTitle") },
+        el("div", { className: "dscr-strip-stats" },
+          stripStat(t("pairCount"), counts.pairCount ?? 0),
+          stripStat(t("indexedCount"), counts.indexedCount ?? 0),
+          stripStat(t("pendingCount"), counts.pendingCount ?? 0),
+          stripStat(t("errorCount"), counts.errorCount ?? 0)),
+        el("div", { className: "dscr-strip-meta" },
+          el("span", { className: "dscr-pill" + (runtime.indexerRunning ? " dscr-pill-on" : "") },
+            el("span", { className: "dscr-pill-dot", "aria-hidden": "true" }),
+            t("indexer") + ": " + (runtime.indexerRunning ? t("running") : t("stopped"))),
+          el("button", { className: "dscr-btn dscr-btn-small", type: "button", disabled, onClick: reload }, t("refresh"))));
+
+      const dashboardCards = [
+        el("div", { className: "dscr-card" },
+          el("h2", { className: "dscr-title" }, t("statusTitle")),
           field(t("homePath"), config.home || t("none")),
           field(t("embedding"), model),
           field(t("dim"), dim),
           field(t("indexer"), runtime.indexerRunning ? t("running") : t("stopped")),
           field(t("initError"), runtime.initError || t("none")),
           field(t("lastError"), runtime.lastError || t("none"))),
-        ...settingsCards,
         el("div", { className: "dscr-card" },
-          el("h2", { className: "dscr-title" }, t("advancedTitle")),
-          el("textarea", { className: "dscr-textarea", value: configText, spellCheck: false, "aria-label": t("advancedTitle"), onChange: (e) => setConfigText(e.target.value) }),
-          el("p", { className: "dscr-help" }, t("configHelp"))),
-        el("div", { className: "dscr-card" },
+          el("h2", { className: "dscr-title" }, t("indexOpsTitle")),
+          field(t("indexFiles"), counts.pairFiles ?? 0),
+          field(t("indexSize"), formatBytes(counts.indexBytes, t)),
+          el("p", { className: "dscr-help" }, t("indexOpsHelp")),
           el("div", { className: "dscr-btns" },
-            btn(t("reload"), reload), btn(t("save"), save),
-            btn(t("testEmbedding"), () => test("connection.testEmbedding")),
-            btn(t("testRerank"), () => test("connection.testRerank")),
-            btn(t("rebuild"), rebuild), btn(t(confirmClear ? "confirmClear" : "clear"), clear)),
-          busy ? el("div", { className: "dscr-busy", role: "status", "aria-live": "polite" }, t("busy") + " " + busy) : null),
+            btn(t("rebuild"), rebuild),
+            btn(t(confirmClear ? "confirmClear" : "clear"), clear))),
+      ];
+
+      const advancedCard = el("details", {
+        className: "dscr-card dscr-details",
+        open: advancedOpen,
+        onToggle: (e) => setAdvancedOpen(e.currentTarget.open),
+      },
+        el("summary", { className: "dscr-title dscr-summary" }, t("advancedTitle")),
+        el("textarea", { className: "dscr-textarea", value: configText, spellCheck: false, "aria-label": t("advancedTitle"), onChange: (e) => setConfigText(e.target.value) }),
+        el("p", { className: "dscr-help" }, t("configHelp")));
+
+      const actionsCard = el("div", { className: "dscr-card" },
+        el("h2", { className: "dscr-title" }, t("actionsTitle")),
+        el("div", { className: "dscr-btns" },
+          btn(t("reload"), reload), btn(t("save"), save),
+          btn(t("testEmbedding"), () => test("connection.testEmbedding")),
+          btn(t("testRerank"), () => test("connection.testRerank")),
+          dirty ? el("span", { className: "dscr-unsaved" }, t("unsaved")) : null));
+
+      const configurationCards = [...settingsCards, advancedCard, actionsCard];
+
+      const panel = (id, children, selected) => el("div", {
+        id: panelDomId(id),
+        className: "dscr-panel",
+        role: "tabpanel",
+        "aria-labelledby": tabDomId(id),
+        tabIndex: selected ? 0 : undefined,
+        hidden: !selected,
+      }, ...children);
+
+      const tabs = [
+        { id: "dashboard", labelKey: "dashboardTab", content: dashboardCards },
+        { id: "configuration", labelKey: "configurationTab", dirty, content: configurationCards },
+      ];
+      const currentTab = tabs.find((tab) => tab.id === activeTab) || tabs[0];
+
+      return el("div", { className: "dscr-page" },
+        statusStrip,
+        el(TabBar, { tabs, active: currentTab.id, onChange: selectTab, t }),
+        ...tabs.map((tab) => panel(tab.id, tab.content, tab.id === currentTab.id)),
+        busy ? el("div", { className: "dscr-busy", role: "status", "aria-live": "polite" }, t("busy") + " " + busy) : null,
         bannerNode);
     }
 
@@ -323,6 +463,12 @@ window.__ModuleLoader__.load({
     const messages = {
       en: {
         title: "Context RAG",
+        dashboardTab: "Dashboard", configurationTab: "Configuration", tabsLabel: "Sections",
+        statusTitle: "Status", indexOpsTitle: "Index maintenance", actionsTitle: "Actions",
+        indexFiles: "Index files", indexSize: "Index size",
+        unitB: "B", unitKB: "KB", unitMB: "MB", unitGB: "GB",
+        indexOpsHelp: "Rebuild re-embeds every stored pair from the JSONL log. Clear removes index rows and the pending outbox but keeps the pair log.",
+        unsaved: "Unsaved changes", refresh: "Refresh",
         pairCount: "Pairs", indexedCount: "Indexed", pendingCount: "Pending", errorCount: "Errors",
         homePath: "Home path", embedding: "Embedding model", dim: "Dimensions", indexer: "Indexer",
         running: "running", stopped: "stopped", initError: "Init error", lastError: "Last error", none: "none", unknown: "unknown",
@@ -349,6 +495,12 @@ window.__ModuleLoader__.load({
       },
       zh: {
         title: "Context RAG",
+        dashboardTab: "仪表盘", configurationTab: "配置", tabsLabel: "分区",
+        statusTitle: "状态", indexOpsTitle: "索引维护", actionsTitle: "操作",
+        indexFiles: "索引文件数", indexSize: "索引体积",
+        unitB: "B", unitKB: "KB", unitMB: "MB", unitGB: "GB",
+        indexOpsHelp: "重建会从 JSONL 日志重新嵌入所有已存条目。清空会删除索引记录和待处理队列，但保留条目日志。",
+        unsaved: "有未保存的修改", refresh: "刷新",
         pairCount: "条目数", indexedCount: "已索引", pendingCount: "待处理", errorCount: "错误",
         homePath: "主页路径", embedding: "嵌入模型", dim: "维度", indexer: "索引器",
         running: "运行中", stopped: "已停止", initError: "初始化错误", lastError: "最近错误", none: "无", unknown: "未知",
@@ -382,7 +534,7 @@ window.__ModuleLoader__.load({
           const style = document.createElement("style");
           style.id = "dsh-context-rag-styles";
           style.textContent = [
-            ".dscr-page { max-width: 840px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; }",
+            ".dscr-page { width: 100%; max-width: 840px; box-sizing: border-box; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; }",
             ".dscr-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 16px; color: var(--dsw-alias-label-primary, inherit); } .dscr-title { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--dsw-alias-label-primary, inherit); }",
             ".dscr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; } .dscr-stat { background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 8px 12px; }",
             ".dscr-stat-value { font-size: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-stat-label { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }",
@@ -392,6 +544,12 @@ window.__ModuleLoader__.load({
             ".dscr-btn { padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); } .dscr-btn:disabled { opacity: 0.5; cursor: default; }",
             ".dscr-busy { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin-top: 8px; } .dscr-banner { margin-top: 4px; padding: 8px 12px; font-size: 13px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary, inherit); } .dscr-banner-error strong { color: var(--dsw-alias-state-error-primary, inherit); }",
             ".dscr-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; } .dscr-form-row { display: flex; flex-direction: column; gap: 4px; } .dscr-form-row label { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-input { padding: 6px 8px; font-size: 13px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); } .dscr-check { display: flex; align-items: center; gap: 6px; }",
+            ".dscr-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 10px 14px; color: var(--dsw-alias-label-primary, inherit); } .dscr-strip-stats { display: flex; flex-wrap: wrap; gap: 18px; } .dscr-strip-stat { display: flex; flex-direction: column; gap: 2px; } .dscr-strip-value { font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-strip-label { font-size: 11px; color: var(--dsw-alias-label-secondary, inherit); }",
+            ".dscr-strip-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; } .dscr-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-pill-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary, inherit)); } .dscr-pill-on .dscr-pill-dot { background: var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary)); }",
+            ".dscr-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--dsw-alias-border-l1); } .dscr-tab { position: relative; padding: 8px 14px; font-size: 13px; color: var(--dsw-alias-label-secondary, inherit); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; } .dscr-tab:hover { color: var(--dsw-alias-label-primary, inherit); } .dscr-tab-active { color: var(--dsw-alias-label-primary, inherit); border-bottom-color: var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary)); font-weight: 600; } .dscr-tab:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: -2px; } .dscr-tab-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 999px; vertical-align: middle; background: var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary)); }",
+            ".dscr-panel { display: flex; flex-direction: column; gap: 12px; } .dscr-panel[hidden] { display: none; } .dscr-panel:focus-visible { outline: 1px solid var(--dsw-alias-border-l2); outline-offset: 2px; }",
+            ".dscr-btn-small { padding: 4px 10px; font-size: 12px; } .dscr-unsaved { align-self: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }",
+            ".dscr-details .dscr-summary { cursor: pointer; margin: 0; } .dscr-details[open] .dscr-summary { margin-bottom: 12px; }",
           ].join("\n");
           document.head.appendChild(style);
           return () => {

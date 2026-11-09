@@ -32,6 +32,12 @@ Release Date: TBD
   **Components** section (no separate row page): separate cards for the
   embedding, rerank, retrieval, and indexing settings, an advanced JSON view,
   write-only API-key handling, and English/Simplified Chinese UI.
+- Config panel reorganized into **Dashboard** and **Configuration** tabs: a
+  persistent status strip keeps index counts and indexer state visible, the
+  Dashboard groups health information with index rebuild/clear, the
+  Configuration tab keeps the four settings cards plus a collapsible advanced
+  JSON view and save/reload/test actions, and the active tab is remembered
+  across refreshes. Switching tabs preserves unsaved edits.
 - Same-session recall is now **off by default**: `retrieval.allowSameSession`
   (default `false`) excludes pairs from the current session in all recall modes;
   set it to `true` to allow them. Forked/derived sessions count as different

@@ -159,9 +159,82 @@ test('client.js: one settings card per configuration category', () => {
   }
 });
 
+test('client.js: dashboard and configuration tabs use accessible tab semantics', () => {
+  const text = readClient();
+  for (const marker of [
+    'role: "tablist"',
+    'role: "tab"',
+    'role: "tabpanel"',
+    'aria-selected',
+    '"aria-controls"',
+    'tabDomId',
+    'panelDomId',
+    'storedTab',
+    'rememberTab',
+    'selectTab',
+    'dashboardTab',
+    'configurationTab',
+  ]) {
+    assert.ok(text.includes(marker), `must define/use ${marker}`);
+  }
+  // Keyboard support and persistent tab selection.
+  for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End']) {
+    assert.ok(text.includes(`event.key === "${key}"`), `must handle ${key} in the tab bar`);
+  }
+  assert.ok(
+    text.includes('localStorage.setItem(TAB_STORAGE_KEY'),
+    'must remember the active tab in localStorage',
+  );
+});
+
+test('client.js: dashboard owns index maintenance and configuration owns save', () => {
+  const text = readClient();
+  assert.ok(text.includes('dashboardCards'), 'must build a dashboard panel');
+  assert.ok(text.includes('configurationCards'), 'must build a configuration panel');
+  // Index maintenance (rebuild/clear) lives on the dashboard.
+  const dashboardStart = text.indexOf('const dashboardCards');
+  const configurationStart = text.indexOf('const actionsCard');
+  assert.ok(
+    dashboardStart >= 0 && configurationStart > dashboardStart,
+    'dashboard and configuration builders must be ordered',
+  );
+  const dashboardBlock = text.slice(dashboardStart, configurationStart);
+  assert.ok(dashboardBlock.includes('rebuild'), 'dashboard must expose index rebuild');
+  assert.ok(dashboardBlock.includes('clear'), 'dashboard must expose index clear');
+  // Save and connection tests live on the configuration tab.
+  const configurationBlock = text.slice(configurationStart);
+  for (const marker of ['save', 'connection.testEmbedding', 'connection.testRerank']) {
+    assert.ok(configurationBlock.includes(marker), `configuration must expose ${marker}`);
+  }
+});
+
+test('client.js: advanced JSON is a collapsible section inside configuration', () => {
+  const text = readClient();
+  assert.ok(text.includes('el("details",'), 'advanced JSON must be a details element');
+  assert.ok(text.includes('advancedOpen'), 'advanced section must keep its open state');
+  assert.ok(text.includes('setAdvancedOpen'), 'advanced section must toggle its open state');
+});
+
+test('client.js: page sizing is stable across tabs', () => {
+  const text = readClient();
+  // The page is a flex child of the host section; auto margins alone make its
+  // width depend on the active tab's content. Explicit width + border-box
+  // keeps both tab panels at one centered width.
+  assert.ok(
+    text.includes(
+      '.dscr-page { width: 100%; max-width: 840px; box-sizing: border-box;',
+    ),
+    'page must fill its container with a stable border-box width',
+  );
+});
+
 test('client.js: EN/ZH parity for every UI translation key', () => {
   const text = readClient();
   const requiredKeys = [
+    'dashboardTab', 'configurationTab', 'tabsLabel', 'statusTitle',
+    'indexOpsTitle', 'actionsTitle', 'indexFiles', 'indexSize',
+    'indexOpsHelp', 'unsaved', 'refresh',
+    'unitB', 'unitKB', 'unitMB', 'unitGB',
     'embeddingTitle', 'rerankTitle', 'retrievalTitle', 'indexingTitle',
     'advancedTitle', 'notSet', 'invalidJsonHint',
     'enabled', 'embeddingBaseUrl', 'embeddingModel', 'dimensions',

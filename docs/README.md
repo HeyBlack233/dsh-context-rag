@@ -24,7 +24,7 @@ injection mode, with the dedupe history kept in a separate
 | [configuration.md](configuration.md) | Every configurable field and its default, for all subsystems; memory recall reuses the embedding/retrieval settings. |
 | [storage-and-data-model.md](storage-and-data-model.md) | Data home, the JSONL pair log, the memory Markdown files, the SQLite index, and the recall-state file. |
 | [retrieval-and-injection.md](retrieval-and-injection.md) | The read path: query, candidate scan over pairs and memories, scoring, and injection. |
-| [configuration-page.md](configuration-page.md) | The GUI config panel on the plugin page: sections, actions, API-key handling, and bilingual UI. |
+| [configuration-page.md](configuration-page.md) | The GUI config panel on the plugin page: Dashboard/Configuration tabs, status strip, actions, API-key handling, and bilingual UI. |
 | [testing.md](testing.md) | How to run checks/tests, what the suites cover, and manual verification. |
 | [security-and-privacy.md](security-and-privacy.md) | Local storage, API-key handling, scope, and the prompt-injection caveat for pairs and memories. |
 | [operations.md](operations.md) | Data paths, backup, index maintenance, memory sync, failure modes, and upgrades. |

@@ -73,7 +73,7 @@ test/
 | `api` | The host-facing HTTP API, trust checks, actions, and error mapping. |
 | `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, and the no-icon contract. |
-| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, form fields, theme tokens, and EN/ZH key parity. |
+| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring and accessibility, action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
 
 The `integration` suite is the end-to-end proof; the `api` suite covers the
 HTTP boundary itself.
@@ -101,9 +101,10 @@ live session:
 1. **Install into a profile** — install `@local/dsh-context-rag` into a
    profile so the plugin is active.
 2. **Configure endpoints** — open the configuration page (see
-   [configuration-page.md](configuration-page.md)) and set an embedding
-   `baseUrl` and `model`; use **Test** to validate, then **Save**. Optionally
-   point the reranker at a rerank endpoint.
+   [configuration-page.md](configuration-page.md)), switch to the
+   **Configuration** tab, and set an embedding `baseUrl` and `model`; use
+   **Test** to validate, then **Save**. Optionally point the reranker at a
+   rerank endpoint.
 3. **Complete a turn** — send a direct user message and let the assistant
    reply. The write path stores the pair.
 4. **Check the JSONL / SQLite / outbox** — inspect `pairs/<workspace-slug>/
@@ -118,8 +119,9 @@ live session:
    from other workspaces become eligible.
 8. **Enable rerank** — turn on `rerank.enabled`, point it at a working rerank
    endpoint, and confirm candidates are reranked.
-9. **Rebuild the index** — trigger `index.rebuild` and confirm the index is
-   rebuilt from JSONL.
+9. **Rebuild the index** — on the **Dashboard** tab, trigger **Rebuild index**
+   and confirm the index is rebuilt from JSONL; switching tabs while the
+   operation runs should keep the busy indicator and result banner visible.
 10. **Check the recall filters** — with `allowSameSession` `false` (default),
     earlier pairs from the same session are not recalled; with
     `dedupeTurns` set, recently injected pairs are not re-injected within the
