@@ -48,6 +48,7 @@ Optional; disabled by default.
 | `timeoutMs` | `3000` | Retrieval pipeline timeout. |
 | `injectionEnabled` | `true` | Whether to inject retrieved context at all. |
 | `scanLimit` | `5000` | Max index rows examined during the scan. |
+| `minMessageLength` | `8` | Minimum combined direct-user-message length for capture and passive recall. Below this value the turn is not stored (no JSONL and no SQLite/outbox row) and no context (pairs or memories) is injected. `0` disables the limit. Each Han ideograph counts as one; each contiguous run of Latin letters/digits counts as one word; punctuation, whitespace, and emoji count as zero and separate those runs. |
 | `allowSameSession` | `false` | Whether pairs from the current session are eligible. `false` excludes pairs whose `sessionId` equals the current session id from **all** recall modes; `true` allows them. Only exact session ids match — forked/derived sessions are different sessions. |
 | `dedupeTurns` | `5` | Turn-distance dedupe for **context injection only**: a pair or memory last recalled at turn `L` (injected, or written by `memory_write`) is eligible again only when `T - L >= dedupeTurns`. `0` disables turn dedupe; `-1` allows each candidate at most once per session, ever. Filtering happens before scoring/rerank/topK. |
 | `dedupeStateRetentionDays` | `90` | Sessions in the recall-state file are dropped when their latest recall is older than this many days; `0` disables the time limit. |
@@ -58,6 +59,11 @@ Recall filters:
 - `allowSameSession` is a **general** retrieval filter: it applies to every recall
   mode (context injection today, and future active recall modes). `dedupeTurns`
   and its bookkeeping are **injection-only**.
+- `minMessageLength` is a **turn-level gate** that runs before both paths: a
+  too-short combined user message suppresses the entire injection (pairs and
+  memories) and also prevents the pair from being captured. It is a strict
+  lower bound: a message with exactly the configured number of units is
+  processed normally.
 - A successful `memory_write` also counts as a recall at the current turn, so
   a just-written memory is not injected again until the window has passed.
   Forgetting a memory clears its entries from the history.
@@ -72,9 +78,10 @@ Recall filters:
 - Deleting `recall-state.json` is safe: it only resets dedupe history (pairs
   become eligible again). The JSONL pair log remains the source of truth.
 
-Validation: `allowSameSession` must be a boolean; `dedupeTurns` is an integer
-from `-1` to `10000`; `dedupeStateRetentionDays` is an integer from `0` to
-`36500`; `dedupeStateMaxSessions` is an integer from `0` to `1000000`.
+Validation: `allowSameSession` must be a boolean; `minMessageLength` is an
+integer from `0` to `10000`; `dedupeTurns` is an integer from `-1` to `10000`;
+`dedupeStateRetentionDays` is an integer from `0` to `36500`;
+`dedupeStateMaxSessions` is an integer from `0` to `1000000`.
 
 ## Indexing
 

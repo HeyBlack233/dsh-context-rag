@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   boundSummary,
   buildEmbeddingText,
+  countMessageUnits,
   escapeFraming,
   extractText,
   truncateMiddle,
@@ -108,4 +109,56 @@ test("text: boundSummary caps at max and appends an ellipsis", () => {
   // Degenerate limits.
   assert.equal(boundSummary("x".repeat(10), 0), "");
   assert.equal(boundSummary("xy", 1), "…");
+});
+
+test("text: countMessageUnits returns 0 for empty and non-string input", () => {
+  assert.equal(countMessageUnits(""), 0);
+  assert.equal(countMessageUnits(null), 0);
+  assert.equal(countMessageUnits(undefined), 0);
+  assert.equal(countMessageUnits(42), 0);
+  assert.equal(countMessageUnits([]), 0);
+  assert.equal(countMessageUnits({}), 0);
+});
+
+test("text: countMessageUnits counts English words and punctuation separators", () => {
+  assert.equal(countMessageUnits("Hello, world!"), 2);
+  assert.equal(countMessageUnits("hello"), 1);
+  assert.equal(countMessageUnits("a b c"), 3);
+  assert.equal(countMessageUnits("..."), 0);
+  assert.equal(countMessageUnits("???"), 0);
+});
+
+test("text: countMessageUnits counts Chinese with punctuation", () => {
+  assert.equal(countMessageUnits("你好，世界"), 4);
+  assert.equal(countMessageUnits("你好"), 2);
+  assert.equal(countMessageUnits("一二三四五六七八"), 8);
+});
+
+test("text: countMessageUnits counts mixed Han and English", () => {
+  assert.equal(countMessageUnits("你好 world"), 3);
+  assert.equal(countMessageUnits("world你好"), 3);
+  assert.equal(countMessageUnits("你好world"), 3);
+});
+
+test("text: countMessageUnits ignores emoji and whitespace as separators", () => {
+  assert.equal(countMessageUnits("hello👋world"), 2);
+  assert.equal(countMessageUnits("   a   b   "), 2);
+  assert.equal(countMessageUnits("你好 👋 世界"), 4);
+});
+
+test("text: countMessageUnits counts number runs as single words", () => {
+  assert.equal(countMessageUnits("123"), 1);
+  assert.equal(countMessageUnits("hello123"), 1);
+  assert.equal(countMessageUnits("hello 123"), 2);
+  assert.equal(countMessageUnits("abc-123"), 2);
+});
+
+test("text: countMessageUnits joins do not change the count", () => {
+  // The capture join ("\n\n") and the injection join ("\n") are whitespace
+  // separators, so summing per-message counts equals the joined count.
+  const parts = ["Hello, world!", "你好，世界", "123"];
+  const joined = parts.join("\n");
+  const sum = parts.reduce((acc, part) => acc + countMessageUnits(part), 0);
+  assert.equal(countMessageUnits(joined), sum);
+  assert.equal(countMessageUnits(joined), 2 + 4 + 1);
 });

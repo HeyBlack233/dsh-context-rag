@@ -432,3 +432,82 @@ test("a recall-state record failure does not block injection", async () => {
   );
   assert.equal(injector.status().lastError, null);
 });
+
+// ---------------------------------------------------------------------------
+// minMessageLength gating
+// ---------------------------------------------------------------------------
+
+test("below minMessageLength: retrieve is not called and no message is added", async () => {
+  const calls = [];
+  const { handler } = makeInjector({
+    retriever: makeDefaultRetriever(calls),
+    config: { retrieval: { maxContextChars: 8000, minMessageLength: 8 } },
+  });
+  const message = makeUserMessage("hi", "m1"); // 1 unit < 8
+  const decision = makeDecision([message]);
+  const payload = { agent: { session: makeSession() }, signal: { aborted: false } };
+
+  const result = await handler(payload, async () => decision);
+  assert.equal(result, decision, "the decision must be returned unchanged");
+  assert.equal(result.messages.length, 1, "no context message may be appended");
+  assert.equal(calls.length, 0, "retrieve must not be called");
+});
+
+test("at exactly minMessageLength retrieval still runs and injects", async () => {
+  const calls = [];
+  const { handler } = makeInjector({
+    retriever: makeDefaultRetriever(calls),
+    config: { retrieval: { maxContextChars: 8000, minMessageLength: 8 } },
+  });
+  const message = makeUserMessage("一二三四五六七八", "m1"); // 8 units, not below
+  const decision = makeDecision([message]);
+  const payload = { agent: { session: makeSession() }, signal: { aborted: false } };
+
+  const result = await handler(payload, async () => decision);
+  assert.equal(result.messages.length, 2);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].query, "一二三四五六七八");
+});
+
+test("minMessageLength 0 injects a short message (old behavior)", async () => {
+  const calls = [];
+  const { handler } = makeInjector({
+    retriever: makeDefaultRetriever(calls),
+    config: { retrieval: { maxContextChars: 8000, minMessageLength: 0 } },
+  });
+  const message = makeUserMessage("hi", "m1"); // 1 unit, feature off
+  const decision = makeDecision([message]);
+  const payload = { agent: { session: makeSession() }, signal: { aborted: false } };
+
+  const result = await handler(payload, async () => decision);
+  assert.equal(result.messages.length, 2);
+  assert.equal(calls.length, 1);
+});
+
+test("a skipped short message is still marked handled, so later pre-steps do not retrieve", async () => {
+  const calls = [];
+  const { handler } = makeInjector({
+    retriever: makeDefaultRetriever(calls),
+    config: { retrieval: { maxContextChars: 8000, minMessageLength: 8 } },
+  });
+  const message = makeUserMessage("hi", "m1"); // 1 unit < 8
+  const decision = makeDecision([message]);
+  const payload = { agent: { session: makeSession() }, signal: { aborted: false } };
+
+  // First pre-step: skipped, but the message must be marked handled.
+  const first = await handler(payload, async () => decision);
+  assert.equal(first.messages.length, 1);
+  assert.equal(calls.length, 0);
+
+  // Second pre-step with the same message: already handled, still no retrieval.
+  const second = await handler(payload, async () => decision);
+  assert.equal(second.messages.length, 1);
+  assert.equal(calls.length, 0);
+
+  // A longer message in the same session must not be blocked by the short one.
+  const longMessage = makeUserMessage("this is a much longer user query message", "m2"); // 8 units
+  const longDecision = makeDecision([longMessage]);
+  const third = await handler(payload, async () => longDecision);
+  assert.equal(third.messages.length, 2, "a qualifying message must still inject");
+  assert.equal(calls.length, 1);
+});

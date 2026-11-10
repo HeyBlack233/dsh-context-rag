@@ -2,19 +2,20 @@
 
 This directory holds the documentation for the `dsh-context-rag` plugin,
 which adds retrieval-augmented generation (RAG) to DeepSeek Harness (DSH)
-sessions: after each turn it stores the (user message, final assistant reply)
-pair in a human-readable JSONL store, indexes its embedding in SQLite, and
-before each model step retrieves similar past pairs from the current
-workspace (or all workspaces), optionally reranks them, and injects the top
-results as a read-only context message. Persistent **memories** — Markdown
-notes under `memories/` with a `MEMORY.md` index, managed through the
-`memory_list` / `memory_get` / `memory_write` / `memory_forget` tools — are
-recalled alongside conversation pairs from the global store and the current
-workspace. Recall is filtered by default: same-session pairs are excluded
-unless `allowSameSession` is enabled, and recently recalled pairs and memories
-— injected or written via `memory_write` — are deduped by turn distance in
-injection mode, with the dedupe history kept in a separate
-`recall-state.json`.
+sessions: after each completed turn (subject to the short-message gate) it
+stores the (user message, final assistant reply) pair in a human-readable
+JSONL store, indexes its embedding in SQLite, and before each model step
+retrieves similar past pairs from the current workspace (or all workspaces),
+optionally reranks them, and injects the top results as a read-only context
+message. Persistent **memories** — Markdown notes under `memories/` with a
+`MEMORY.md` index, managed through the `memory_list` / `memory_get` /
+`memory_write` / `memory_forget` tools — are recalled alongside conversation
+pairs from the global store and the current workspace. Recall is filtered by
+default: same-session pairs are excluded unless `allowSameSession` is enabled,
+combined user messages shorter than `minMessageLength` neither trigger recall
+nor enter the pair store, and recently recalled pairs and memories — injected
+or written via `memory_write` — are deduped by turn distance in injection
+mode, with the dedupe history kept in a separate `recall-state.json`.
 
 ## Documentation index
 

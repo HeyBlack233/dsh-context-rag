@@ -177,6 +177,7 @@ function captureTurn(capture, session, { turn, userText, userId, assistantText, 
 async function makePipeline(t, { patch = {}, reranker = null, withMemoryStore = false } = {}) {
   const home = await makeTempDir("dsh-rag-int-");
   const configStore = createConfigStore({ home });
+  const { retrieval: retrievalPatch = {}, ...restPatch } = patch;
   configStore.save({
     embedding: { baseUrl: "http://fake", model: "fake-embed", dimensions: 4 },
     retrieval: {
@@ -186,9 +187,11 @@ async function makePipeline(t, { patch = {}, reranker = null, withMemoryStore = 
       minScore: 0.2,
       maxContextChars: 2000,
       timeoutMs: 2000,
+      minMessageLength: 0,
+      ...retrievalPatch,
     },
     indexing: { enabled: true },
-    ...patch,
+    ...restPatch,
   });
 
   const db = openIndexDatabase(path.join(home, "index.sqlite"));
@@ -392,6 +395,75 @@ test("captures a pair, indexes it, and injects related context with dedupe", asy
     decision2.messages.filter((m) => m.source?.kind === "context-rag").length,
     0,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Test 2a: minMessageLength gates capture and injection end-to-end.
+// ---------------------------------------------------------------------------
+
+test("minMessageLength: short turns are not stored or injected; long turns are", async (t) => {
+  const { home, db, capture, indexer, injectorCtx } = await makePipeline(t, {
+    patch: { retrieval: { allowSameSession: true, minMessageLength: 8 } },
+  });
+
+  const session = { id: "sess-minlen", header: { cwd: "/tmp/work" } };
+
+  // A short turn ("alpha question" = 2 units < 8) must not be persisted
+  // anywhere: no JSONL pair, no outbox row, no SQLite row.
+  captureTurn(capture, session, {
+    turn: 1,
+    userText: "alpha question",
+    userId: "u1",
+    assistantText: "alpha answer",
+    assistantId: "a1",
+  });
+  await capture.stopping({ session }, 1);
+  const shortPairs = await collectPairs(home);
+  assert.equal(shortPairs.length, 0, "a below-threshold turn must not be persisted");
+  assert.equal(
+    db.stats().pendingCount,
+    0,
+    "a below-threshold turn must not create an outbox row",
+  );
+
+  // A turn with >= 8 units is stored as usual.
+  captureTurn(capture, session, {
+    turn: 2,
+    userText: "alpha question with more words here please now", // 8 units
+    userId: "u3",
+    assistantText: "alpha answer",
+    assistantId: "a3",
+  });
+  await capture.stopping({ session }, 2);
+  const storedPairs = await collectPairs(home);
+  assert.equal(storedPairs.length, 1, "an at-or-above-threshold turn must be stored");
+  assert.equal(storedPairs[0].user, "alpha question with more words here please now");
+
+  // Index the stored pair so the pre-step assertions below are meaningful.
+  await indexer.reconcile();
+  await indexer.pumpOnce();
+  assert.equal(db.stats().indexedCount, 1);
+
+  // A short pre-step (3 units < 8) must not inject, even though a matching
+  // pair is indexed and eligible.
+  const short = await emitInjection(injectorCtx, session, 3, "alpha follow up", "u2");
+  assert.equal(
+    short.messages.filter((m) => m.source?.kind === "context-rag").length,
+    0,
+    "a below-threshold message must not inject context",
+  );
+
+  // A qualifying pre-step (8 units) injects context end-to-end.
+  const long = await emitInjection(
+    injectorCtx,
+    session,
+    4,
+    "alpha follow up question here please now more", // 8 units
+    "u4",
+  );
+  const added = long.messages.filter((m) => m.source?.kind === "context-rag");
+  assert.equal(added.length, 1, "an at-or-above-threshold message must inject");
+  assert.ok(added[0].content[0].text.includes("alpha question with more words here"));
 });
 
 // ---------------------------------------------------------------------------

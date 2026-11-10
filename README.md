@@ -5,8 +5,9 @@ retrieval-augmented generation (RAG) to DSH sessions.
 
 ## Purpose
 
-After each turn, the plugin stores the (user message, final assistant reply)
-pair in a human-readable JSONL store and indexes its embedding in SQLite.
+After each completed turn (subject to the short-message gate below), the
+plugin stores the (user message, final assistant reply) pair in a
+human-readable JSONL store and indexes its embedding in SQLite.
 Before each model step, it retrieves similar past pairs from the current
 workspace (or all workspaces), optionally reranks them, and injects the top
 results as a read-only context message. Persistent **memories** — Markdown
@@ -17,9 +18,9 @@ Trajectory so you can see exactly what was retrieved and used.
 
 ## Features
 
-- **JSONL pair store** with a **rebuildable SQLite index/outbox**: each turn's
-  pair is appended to a JSONL file and queued for embedding; the index can be
-  rebuilt from the store at any time.
+- **JSONL pair store** with a **rebuildable SQLite index/outbox**: each
+  qualifying turn's pair is appended to a JSONL file and queued for embedding;
+  the index can be rebuilt from the store at any time.
 - **OpenAI-compatible embeddings** for indexing and querying.
 - Optional **Jina / Cohere / SiliconFlow-compatible `/v1/rerank`** support to
   re-rank the initial candidates before injection.
@@ -28,6 +29,10 @@ Trajectory so you can see exactly what was retrieved and used.
 - **Same-session recall is off by default**: pairs from the current session are
   excluded unless you enable `allowSameSession`; forked/derived sessions count
   as different sessions.
+- **Short-message gate**: messages below `minMessageLength` (default `8`, `0`
+  disables) neither trigger passive recall nor enter the pair store. Han
+  characters count one each, Latin/number word runs count one, and punctuation
+  is ignored.
 - **Turn-distance dedupe** for context injection: a pair or memory is not
   recalled again until `dedupeTurns` turns have passed (`0` disables turn
   dedupe; `-1` allows each candidate only once per session, ever). A successful
@@ -77,10 +82,11 @@ Defaults: `candidateLimit = 20`, `topK = 5`, `minScore = 0.40`,
 to `1.00` with two decimals.
 
 Recall defaults: `allowSameSession = false` (same-session recall off),
-`dedupeTurns = 5` (injection-only turn dedupe, also counting memory writes;
-`0` disables, `-1` = once per session ever), `dedupeStateRetentionDays = 90`
-and `dedupeStateMaxSessions = 500` (recall-state retention; `0` disables the
-corresponding limit).
+`minMessageLength = 8` (shorter combined user messages skip injection and are
+not stored; `0` disables), `dedupeTurns = 5` (injection-only turn dedupe, also
+counting memory writes; `0` disables, `-1` = once per session ever),
+`dedupeStateRetentionDays = 90` and `dedupeStateMaxSessions = 500`
+(recall-state retention; `0` disables the corresponding limit).
 
 ## Data layout
 

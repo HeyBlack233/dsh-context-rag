@@ -10,7 +10,20 @@ An `agent/pre-step` hook runs before each model step. It detects **new direct
 user messages** (source kind `user`). Injected context is attached **once per
 user message**; subsequent steps in the same turn do not re-inject.
 
+Before retrieval starts, the combined text of the new direct user messages is
+measured against `retrieval.minMessageLength` (default `8`; `0` disables).
+Messages below the threshold are marked as handled but produce **no injection
+at all** — neither conversation pairs nor memories are retrieved — and the
+corresponding turn is also omitted from the pair store (see
+[Recall filters](#recall-filters)).
+
 ## Pipeline
+
+Before step 1 below, a **length gate** counts the combined new user text and
+skips the rest of the pipeline when it is below `minMessageLength`. Each Han
+ideograph counts as one; each contiguous run of Latin letters/digits counts as
+one word; punctuation, whitespace, and emoji count as zero and separate those
+runs. The comparison is strict: exactly the threshold proceeds normally.
 
 1. **Query embedding** — embed the new user message using the configured
    embedding API (same model/dim as the index).
@@ -44,11 +57,12 @@ fail-open: on timeout or error, injection is skipped and a warning is logged.
 
 ## Recall filters
 
-Two filters control which past pairs and memories are eligible, and they
+Three gates control which past pairs and memories are eligible, and they
 differ in scope:
 
 | Filter | Mode | Behavior |
 | --- | --- | --- |
+| Minimum message length | **Capture and all recall modes** | When `retrieval.minMessageLength` is greater than `0` (default `8`), a combined direct user message with fewer units is not captured at all (no JSONL, SQLite, or outbox row) and triggers no injection, including memories. `0` disables the gate. Han ideographs count one each; contiguous Latin-letter/digit runs count one word; punctuation, whitespace, and emoji count zero. The comparison is strict: exactly the threshold proceeds normally. |
 | Same-session exclusion | **All** recall modes, **conversation pairs only** | When `retrieval.allowSameSession` is `false` (default), pairs whose `sessionId` equals the current session id are excluded during the candidate scan. Set it to `true` to allow same-session recall. Only exact session ids match — forked/derived sessions are different sessions. Memories have no session and are never excluded by this filter. |
 | Turn dedupe | **Context injection only** | Per current session, a pair or memory last recalled at turn `L` is eligible again only when `T - L >= retrieval.dedupeTurns` (default `5`). `0` disables turn dedupe; `-1` allows each candidate at most once per session, ever. The filter runs **before** scoring/rerank/topK so eligible candidates can fill the `topK` slots. |
 

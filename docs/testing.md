@@ -54,24 +54,24 @@ test/
 
 | Suite | Focus |
 | --- | --- |
-| `config` | Config load, validation, persistence, and API-key redaction. |
+| `config` | Config load, validation, persistence, API-key redaction, and the `minMessageLength` bounds. |
 | `paths` | Data-home resolution and every path underneath it. |
-| `text` | Text normalization and character truncation. |
+| `text` | Text normalization, `minMessageLength` word/Han counting, and character truncation. |
 | `pairs` | Reading/appending the JSONL pair log and text-hash computation. |
 | `db` | SQLite schema creation (including the non-destructive memory-column migration), connection handling, and atomic writes. |
 | `http` | The shared HTTP client behavior (timeouts, retries, errors). |
 | `embeddings` | Calling the embedding API and producing normalized vectors. |
 | `rerank` | The optional OpenAI-compatible rerank endpoint call. |
-| `capture` | Turn-stopping capture: what to store and outbox enqueueing. |
+| `capture` | Turn-stopping capture: what to store, the short-message skip (no JSONL/DB/outbox), and outbox enqueueing. |
 | `indexer` | Background worker: draining the outbox (pairs and memories), batching, retry. |
 | `render` | Building the injected context text from retrieved pairs and memories. |
 | `retrieval` | Query embedding, candidate scan over pairs and memories, scoring, and top-K selection. |
 | `recall-state` | Persistent turn-dedupe state: load/prune/record/remove/eligibility, retention by days and max sessions, corrupt/missing-file handling, and atomic persistence. |
-| `inject` | Dedupe per user message and attaching the injected context message. |
+| `inject` | Per-user-message dedupe, the short-message gate, and attaching the injected context message. |
 | `memories` | Memory store: Markdown + YAML front matter, `MEMORY.md` index maintenance, `.forgotten` handling, name/content validation, and the startup sync scan. |
 | `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, turn-dedupe recording on write and cleanup on forget, and error mapping. |
 | `api` | The host-facing HTTP API, trust checks, actions, and error mapping. |
-| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. |
+| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, the short-message gate suppressing both capture and injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, and the no-icon contract. |
 | `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring and accessibility, action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
 
@@ -105,36 +105,41 @@ live session:
    **Configuration** tab, and set an embedding `baseUrl` and `model`; use
    **Test** to validate, then **Save**. Optionally point the reranker at a
    rerank endpoint.
-3. **Complete a turn** — send a direct user message and let the assistant
-   reply. The write path stores the pair.
-4. **Check the JSONL / SQLite / outbox** — inspect `pairs/<workspace-slug>/
+3. **Complete a turn** — send a direct user message (at least
+   `retrieval.minMessageLength` units; default `8`) and let the assistant reply.
+   The write path stores the pair.
+4. **Check the short-message gate** — with the default threshold, send a very
+   short message (for example `hi`). Confirm no new JSONL line, SQLite row, or
+   outbox entry appears and no `context-rag` context is injected. Set
+   `retrieval.minMessageLength = 0` and repeat to confirm the gate is disabled.
+5. **Check the JSONL / SQLite / outbox** — inspect `pairs/<workspace-slug>/
    <session-slug>.jsonl` for the new entry, and confirm the SQLite index and
    outbox state (see [operations.md](operations.md) for paths).
-5. **Send a second message** — the read path should now retrieve the earlier
+6. **Send a second message** — the read path should now retrieve the earlier
    pair.
-6. **Inspect the Trajectory** — open the Trajectory view for the session and
+7. **Inspect the Trajectory** — open the Trajectory view for the session and
    confirm a `context-rag` context row is present (chat hides it; Trajectory
    shows it).
-7. **Switch scope** — change the retrieval `scope` to `all` and confirm pairs
+8. **Switch scope** — change the retrieval `scope` to `all` and confirm pairs
    from other workspaces become eligible.
-8. **Enable rerank** — turn on `rerank.enabled`, point it at a working rerank
+9. **Enable rerank** — turn on `rerank.enabled`, point it at a working rerank
    endpoint, and confirm candidates are reranked.
-9. **Rebuild the index** — on the **Dashboard** tab, trigger **Rebuild index**
-   and confirm the index is rebuilt from JSONL; switching tabs while the
-   operation runs should keep the busy indicator and result banner visible.
-10. **Check the recall filters** — with `allowSameSession` `false` (default),
+10. **Rebuild the index** — on the **Dashboard** tab, trigger **Rebuild index**
+    and confirm the index is rebuilt from JSONL; switching tabs while the
+    operation runs should keep the busy indicator and result banner visible.
+11. **Check the recall filters** — with `allowSameSession` `false` (default),
     earlier pairs from the same session are not recalled; with
     `dedupeTurns` set, recently injected pairs are not re-injected within the
     turn distance, and `recall-state.json` appears in the data home. After a
     `memory_write`, confirm the written memory is not recalled again in the
     same session until the turn window has passed.
-11. **Exercise the memory tools** — ask the assistant to save a note
+12. **Exercise the memory tools** — ask the assistant to save a note
     (`memory_write`), list memories (`memory_list`), read one (`memory_get`),
     and forget it (`memory_forget`). Confirm `<name>.md` appears in
     `memories/workspaces/<workspace-slug>/` (or `memories/global/`), the
     `MEMORY.md` index is updated, and the forgotten file is renamed to
     `<name>.forgotten`.
-12. **Check memory recall** — start a new session in the same workspace and ask
+13. **Check memory recall** — start a new session in the same workspace and ask
     about the saved topic; the memory should be injected alongside pair
     candidates. Edit a memory file by hand and restart the plugin; the startup
     scan should pick up the change (there is no real-time watcher).

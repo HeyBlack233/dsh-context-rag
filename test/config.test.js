@@ -90,6 +90,7 @@ describe("DEFAULT_CONFIG", () => {
         dedupeTurns: 5,
         dedupeStateRetentionDays: 90,
         dedupeStateMaxSessions: 500,
+        minMessageLength: 8,
       },
       indexing: {
         enabled: true,
@@ -305,6 +306,14 @@ describe("normalizeConfig", () => {
       assertInvalid({ retrieval: { dedupeStateMaxSessions: 500.5 } }, "retrieval.dedupeStateMaxSessions");
     });
 
+    test("minMessageLength must be an integer between 0 and 10000", () => {
+      assertInvalid({ retrieval: { minMessageLength: -1 } }, "retrieval.minMessageLength");
+      assertInvalid({ retrieval: { minMessageLength: 10001 } }, "retrieval.minMessageLength");
+      assertInvalid({ retrieval: { minMessageLength: 1.5 } }, "retrieval.minMessageLength");
+      assertInvalid({ retrieval: { minMessageLength: "8" } }, "retrieval.minMessageLength");
+      assertInvalid({ retrieval: { minMessageLength: null } }, "retrieval.minMessageLength");
+    });
+
     test("invalid apiKey types (non-string, non-null)", () => {
       assertInvalid({ embedding: { apiKey: 123 } }, "embedding.apiKey");
       assertInvalid({ rerank: { apiKey: true } }, "rerank.apiKey");
@@ -353,6 +362,21 @@ describe("normalizeConfig", () => {
     assert.strictEqual(
       cfg.retrieval.dedupeStateMaxSessions,
       DEFAULT_CONFIG.retrieval.dedupeStateMaxSessions,
+    );
+  });
+
+  test("minMessageLength accepts 0 (feature off) and 10000 (upper bound)", () => {
+    const off = normalizeConfig({ retrieval: { minMessageLength: 0 } });
+    assert.strictEqual(off.retrieval.minMessageLength, 0);
+    const max = normalizeConfig({ retrieval: { minMessageLength: 10000 } });
+    assert.strictEqual(max.retrieval.minMessageLength, 10000);
+  });
+
+  test("minMessageLength falls back to the default when omitted", () => {
+    const cfg = normalizeConfig({ retrieval: { topK: 3 } });
+    assert.strictEqual(
+      cfg.retrieval.minMessageLength,
+      DEFAULT_CONFIG.retrieval.minMessageLength,
     );
   });
 

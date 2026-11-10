@@ -16,7 +16,7 @@ Release Date: TBD
 
 ### Details
 
-- Store each turn's (user message, final assistant reply) pair in a
+- Store each qualifying turn's (user message, final assistant reply) pair in a
   human-readable JSONL store, indexed with embeddings in SQLite.
 - Embedding indexer with an outbox: pairs are queued for embedding and the
   SQLite index can be rebuilt from the JSONL store.
@@ -25,6 +25,11 @@ Release Date: TBD
   endpoint.
 - Pre-step durable context injection: retrieved pairs are injected as a
   read-only context message shown in the Trajectory.
+- Short-message gate: `retrieval.minMessageLength` (default `8`, `0` disables)
+  skips passive recall (pairs and memories) and capture for user messages
+  below the threshold, so such turns never enter the JSONL log, SQLite index,
+  or outbox. Han characters count one each, Latin/digit runs count one word,
+  and punctuation/whitespace/emoji are ignored; the comparison is strict.
 - Cosine and rerank score thresholds are separate settings: `minScore` filters
   cosine similarity before reranking, and `rerankMinScore` filters the rerank
   relevance score. Both range from `0.00` to `1.00` with two decimals.

@@ -37,7 +37,9 @@ Runtime config is stored here. It is written atomically, created with mode
 `pairs/<workspace-slug>/<session-slug>.jsonl` is the append-only source of
 truth. One JSON object per line. The slug reflects the workspace and session
 the pair belongs to, so pairs from different workspaces/sessions stay in
-separate files.
+separate files. A turn whose combined direct-user-message text is below
+`retrieval.minMessageLength` (default `8`) is not captured and therefore has no
+JSONL line, SQLite row, or outbox entry; `0` disables that gate.
 
 Each line is an object with these fields:
 
@@ -214,7 +216,8 @@ Schema (JSON, version 1):
 
 1. **Capture** — a turn-stopping hook stores a (direct user message, final
    assistant reply) pair. Only source-kind `user` messages are captured as the
-   user side; subagent sessions, interrupted turns, and empty turns are skipped.
+   user side; subagent sessions, interrupted turns, empty turns, and turns
+   whose combined user text is below `retrieval.minMessageLength` are skipped.
 2. **Append** — the pair is appended to the JSONL log first.
 3. **Enqueue** — the pair is then enqueued to the `outbox`.
 

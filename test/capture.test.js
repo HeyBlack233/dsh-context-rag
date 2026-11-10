@@ -54,9 +54,9 @@ function fakeDb() {
   };
 }
 
-/** @param {string} home @returns {object} A config store with `home`. */
-function fakeConfigStore(home) {
-  return { home, get: () => ({}) };
+/** @param {string} home @param {object} [config] @returns {object} A config store with `home`. */
+function fakeConfigStore(home, config = {}) {
+  return { home, get: () => config };
 }
 
 /**
@@ -248,6 +248,91 @@ test("capture: a turn without an assistant reply is skipped", async (t) => {
   await capture.stopping(agentOf(sess), 0);
 
   assert.equal(db.pairs.size, 0);
+});
+
+test("capture: a turn below minMessageLength is not persisted anywhere", async (t) => {
+  const home = await makeHome(t);
+  const db = fakeDb();
+  const capture = createCapture({
+    db,
+    configStore: fakeConfigStore(home, { retrieval: { minMessageLength: 8 } }),
+    logger: null,
+  });
+  const sess = session("sess-1", { cwd: "/work/proj" });
+
+  capture.observe(sess, turnStart(0));
+  capture.observe(sess, userMessage("u1", "Hi")); // 1 unit < 8
+  capture.observe(sess, assistantMessage("a1", "World"));
+  await capture.stopping(agentOf(sess), 0);
+
+  // No SQLite pair row.
+  assert.equal(db.pairs.size, 0);
+  // No JSONL append (no pair file is even created).
+  const found = [];
+  for await (const { record } of readPairs(home)) {
+    found.push(record);
+  }
+  assert.deepEqual(found, []);
+});
+
+test("capture: a turn at exactly minMessageLength is stored", async (t) => {
+  const home = await makeHome(t);
+  const db = fakeDb();
+  const capture = createCapture({
+    db,
+    configStore: fakeConfigStore(home, { retrieval: { minMessageLength: 8 } }),
+    logger: null,
+  });
+  const sess = session("sess-1", { cwd: "/work/proj" });
+
+  capture.observe(sess, turnStart(0));
+  capture.observe(sess, userMessage("u1", "一二三四五六七八")); // 8 units, not below
+  capture.observe(sess, assistantMessage("a1", "World"));
+  await capture.stopping(agentOf(sess), 0);
+
+  assert.equal(db.pairs.size, 1);
+  const file = pairFilePath({ home, cwd: "/work/proj", sessionId: "sess-1" });
+  const lines = (await readFile(file, "utf8")).trim().split("\n");
+  assert.equal(lines.length, 1);
+});
+
+test("capture: minMessageLength 0 stores a short message (old behavior)", async (t) => {
+  const home = await makeHome(t);
+  const db = fakeDb();
+  const capture = createCapture({
+    db,
+    configStore: fakeConfigStore(home, { retrieval: { minMessageLength: 0 } }),
+    logger: null,
+  });
+  const sess = session("sess-1", { cwd: "/work/proj" });
+
+  capture.observe(sess, turnStart(0));
+  capture.observe(sess, userMessage("u1", "Hi")); // 1 unit, feature off
+  capture.observe(sess, assistantMessage("a1", "World"));
+  await capture.stopping(agentOf(sess), 0);
+
+  assert.equal(db.pairs.size, 1);
+});
+
+test("capture: minMessageLength counts the combined user messages", async (t) => {
+  const home = await makeHome(t);
+  const db = fakeDb();
+  const capture = createCapture({
+    db,
+    configStore: fakeConfigStore(home, { retrieval: { minMessageLength: 3 } }),
+    logger: null,
+  });
+  const sess = session("sess-1", { cwd: "/work/proj" });
+
+  capture.observe(sess, turnStart(0));
+  capture.observe(sess, userMessage("u1", "Hi")); // 1 unit
+  capture.observe(sess, userMessage("u2", "你好")); // 2 units, combined = 3 (exact)
+  capture.observe(sess, assistantMessage("a1", "World"));
+  await capture.stopping(agentOf(sess), 0);
+
+  assert.equal(db.pairs.size, 1);
+  const record = [...db.pairs.values()][0];
+  assert.equal(record.user, "Hi\n\n你好");
 });
 
 test("capture: an interrupted assistant reply is skipped", async (t) => {

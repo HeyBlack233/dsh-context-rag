@@ -145,6 +145,7 @@ rebuild/clear the index.
 
 | Symptom | Likely cause | Resolution |
 | --- | --- | --- |
+| Short turn not stored or recalled | User message below `retrieval.minMessageLength` (default `8`) | Expected default behavior; set `retrieval.minMessageLength = 0` to disable the gate or use a longer message. |
 | No context injected | Not configured — no embedding endpoint set | Configure `baseUrl`/`model` and confirm `enabled`/`injectionEnabled`. |
 | Embedding request rejected | `401`/`403` from the embedding endpoint | Check the API key and endpoint authorization. |
 | Embedding request slow/fails | Timeout on the endpoint | Increase `embedding.timeoutMs`; check connectivity. |
@@ -168,10 +169,11 @@ pairs in the outbox and retries within `maxAttempts`.
   data. The startup scan refreshes `MEMORY.md` indexes and memory vectors.
 - **New defaults apply to existing configs**: nothing is deleted or migrated,
   and existing `config.json` files simply gain the new defaults
-  (`retrieval.allowSameSession = false`, `retrieval.dedupeTurns = 5`,
-  `retrieval.dedupeStateRetentionDays = 90`,
-  `retrieval.dedupeStateMaxSessions = 500`). The most visible behavior change
-  is that same-session recall is now **off by default**; set
-  `retrieval.allowSameSession = true` to restore it.
+  (`retrieval.minMessageLength = 8`, `retrieval.allowSameSession = false`,
+  `retrieval.dedupeTurns = 5`, `retrieval.dedupeStateRetentionDays = 90`,
+  `retrieval.dedupeStateMaxSessions = 500`). Note that short user messages now
+  skip capture and passive recall by default; set
+  `retrieval.minMessageLength = 0` to disable that gate, and set
+  `retrieval.allowSameSession = true` to restore same-session recall.
 - After upgrading, restart/activate the plugin so the worker and hooks are
   re-registered; startup reconciliation ensures the index is current.

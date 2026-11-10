@@ -1,11 +1,12 @@
 # Architecture
 
 `context-rag` is a DeepSeek Harness (DSH) plugin that adds retrieval-augmented
-generation to sessions. After each completed turn it stores the (user message,
-final assistant reply) pair as human-readable JSONL, indexes an embedding in
-SQLite, and before each model step retrieves similar past pairs — plus
-persistent **memories** managed through the `memory_*` tools — and injects the
-top results as a durable, read-only context message.
+generation to sessions. After each completed turn (subject to the
+`retrieval.minMessageLength` gate) it stores the (user message, final
+assistant reply) pair as human-readable JSONL, indexes an embedding in SQLite,
+and before each model step retrieves similar past pairs — plus persistent
+**memories** managed through the `memory_*` tools — and injects the top
+results as a durable, read-only context message.
 
 This page gives an end-to-end overview. See
 [storage-and-data-model.md](storage-and-data-model.md) for how data is laid out,
@@ -18,18 +19,22 @@ The plugin has two independent, asynchronous flows over the same store.
 
 1. **Write path (indexing).** A turn-stopping hook captures the direct user
    message and the final assistant reply, appends them to a JSONL log (the
-   source of truth), then enqueues an embedding job. The `memory_write` tool
-   follows the same pattern: it writes the Markdown memory file and refreshes
-   the `MEMORY.md` index (the file write is the commit point), then enqueues an
-   embedding job. A successful write is also recorded in `recall-state.json`
-   at the current turn, so turn dedupe treats the written memory as recently
-   recalled. A single background worker batches jobs, computes normalized
-   vectors via an embedding API, and writes them into the SQLite index.
+   source of truth), then enqueues an embedding job. `retrieval.minMessageLength`
+   gates this path: a combined user message below the threshold (`0` disables)
+   is neither stored nor embedded. The `memory_write` tool follows the same
+   pattern: it writes the Markdown memory file and refreshes the `MEMORY.md`
+   index (the file write is the commit point), then enqueues an embedding job.
+   A successful write is also recorded in `recall-state.json` at the current
+   turn, so turn dedupe treats the written memory as recently recalled. A
+   single background worker batches jobs, computes normalized vectors via an
+   embedding API, and writes them into the SQLite index.
 2. **Read path (retrieval).** An `agent/pre-step` hook detects new direct user
-   messages, embeds the query, scans the SQLite index for similar past pairs
-   **and memories** (excluding same-session pairs by default and turn-deduped
-   candidates in injection mode), optionally reranks, and injects the top
-   results into the conversation as a read-only context message.
+   messages, applies the same `minMessageLength` gate, then embeds the query,
+   scans the SQLite index for similar past pairs **and memories** (excluding
+   same-session pairs by default and turn-deduped candidates in injection
+   mode), optionally reranks, and injects the top results into the conversation
+   as a read-only context message. A message below the gate is marked handled
+   but retrieves nothing, including memories.
 
 Both flows are fail-open: timeouts or errors skip injection and log a warning
 rather than disrupting the turn.
@@ -41,10 +46,10 @@ rather than disrupting the turn.
 | `index.js` | Plugin lifecycle: config loading, service wiring, hook registration, worker start/stop, memory store setup, and the startup memory scan. |
 | `lib/config.js` | Load, validate, and persist runtime config; redact API keys. |
 | `lib/paths.js` | Resolve the data home and all file paths underneath it. |
-| `lib/text.js` | Text normalization and character-truncation helpers. |
+| `lib/text.js` | Text normalization, short-message unit counting (Han characters and Latin/digit words), and character-truncation helpers. |
 | `lib/pairs.js` | Read and append the JSONL pair log; compute text hashes. |
 | `lib/db.js` | SQLite connection, schema creation, atomic writes; indexes memory vectors alongside pair vectors (shared outbox). |
-| `lib/capture.js` | Turn-stopping capture: decide what to store and enqueue outbox rows. |
+| `lib/capture.js` | Turn-stopping capture: decide what to store (including the `minMessageLength` skip) and enqueue outbox rows. |
 | `lib/indexer.js` | Background worker: drain the shared outbox (pairs and memories), batch embeddings, write index, retry. |
 | `lib/embeddings.js` | Call the configured embedding API; produce normalized vectors. |
 | `lib/rerank.js` | Optional call to an OpenAI-compatible rerank endpoint. |
@@ -53,7 +58,7 @@ rather than disrupting the turn.
 | `lib/retrieval.js` | Query embedding, candidate scan over pairs and memories (global + current workspace), scoring, top-K selection, and turn dedupe. |
 | `lib/render.js` | Build the injected context text from retrieved pairs and memories. |
 | `lib/message.js` | Construct and manage context messages and their source metadata. |
-| `lib/inject.js` | Dedupe per user message, attach the injected context message, and record the actually rendered candidates for turn dedupe. |
+| `lib/inject.js` | Dedupe per user message, apply the short-message gate, attach the injected context message, and record the actually rendered candidates for turn dedupe. |
 | `lib/recall-state.js` | Persistent turn-dedupe state: per-(session, pair) last turn, timestamp, and count; entry removal for forgotten memories; retention pruning; atomic persistence. |
 | `lib/api.js` | Plugin-internal API surface (services exposed to the host). |
 | `client.js` | Web config page presented in the Harness GUI. |

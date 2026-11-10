@@ -65,8 +65,9 @@ workspace; use `all` only when cross-workspace recall is intended.
 ## Subagent sessions are excluded
 
 Only **direct** user messages are captured (source kind `user`). Subagent
-sessions, interrupted turns, and empty turns are skipped, so background agent
-activity is not stored into the pair log.
+sessions, interrupted turns, empty turns, and turns whose combined user text is
+below `retrieval.minMessageLength` (default `8`) are skipped, so background
+agent activity and very short exchanges are not stored into the pair log.
 
 ## Injected text is untrusted
 
@@ -99,14 +100,15 @@ memory content if cross-contamination is a concern.
 
 ## Secrets in the JSONL
 
-The pair log stores exactly what you type and what the assistant replies. If
-you paste an API key, password, or secret into a user message, it will appear
-in plaintext in the JSONL (and be embedded/indexed). **No secrets are written
-unless you type them** — the plugin never injects its own credentials into the
-log. The same applies to memories: anything saved through `memory_write`
-appears in plaintext in `memories/` and is embedded/indexed. Be mindful that
-anything you type into a conversation or save as a memory becomes retrievable
-content.
+The pair log stores each captured turn exactly as you typed it and the
+assistant replied (turns below `retrieval.minMessageLength` are not captured).
+If you paste an API key, password, or secret into a user message, it will
+appear in plaintext in the JSONL (and be embedded/indexed). **No secrets are
+written unless you type them** — the plugin never injects its own credentials
+into the log. The same applies to memories: anything saved through
+`memory_write` appears in plaintext in `memories/` and is embedded/indexed. Be
+mindful that anything you type into a conversation or save as a memory becomes
+retrievable content.
 
 ## Deletion and cleanup
 

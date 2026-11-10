@@ -65,14 +65,15 @@ The Configuration tab holds all editing surfaces:
   - **Embedding** — `enabled`, `baseUrl`, `model`, `dimensions`, `apiKey`,
     `timeoutMs`, `maxRetries`, `batchSize`, `maxEmbeddingChars`;
   - **Rerank** — `enabled`, `baseUrl`, `model`, `path`, `apiKey`;
-  - **Retrieval** — `injectionEnabled`, `allowSameSession`, `scope`
-    (`workspace` / `all`), `candidateLimit`, `topK`, `minScore`,
-    `rerankMinScore`, `maxContextChars`, `timeoutMs`, `dedupeTurns`,
+  - **Retrieval** — `injectionEnabled`, `allowSameSession`,
+    `minMessageLength`, `scope` (`workspace` / `all`), `candidateLimit`, `topK`,
+    `minScore`, `rerankMinScore`, `maxContextChars`, `timeoutMs`, `dedupeTurns`,
     `dedupeStateRetentionDays`, `dedupeStateMaxSessions`. A short help
-    paragraph below the rows explains the special values: `dedupeTurns` of `0`
-    disables turn dedupe, `-1` allows each candidate (pair or memory) only
-    once per session, successful memory writes count as a recall, and
-    retention values of `0` disable that limit.
+    paragraph below the rows explains the special values: `minMessageLength`
+    below-threshold messages skip recall and are not stored (`0` disables),
+    `dedupeTurns` of `0` disables turn dedupe, `-1` allows each candidate
+    (pair or memory) only once per session, successful memory writes count as
+    a recall, and retention values of `0` disable that limit.
   - **Indexing** — `enabled`, `pollIntervalMs`, `retryDelayMs`, `maxAttempts`.
 - **Advanced JSON** — a collapsible section with an editable JSON view of the
   whole config for fields not exposed in the structured form. Editing either
