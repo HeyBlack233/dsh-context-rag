@@ -9,9 +9,12 @@ covers, and how to manually verify the plugin end-to-end in a live profile.
 | --- | --- |
 | `npm run check` | Syntax-checks every JavaScript file with `node --check`. |
 | `npm test` | Runs the test suite with the Node test runner (`node --test`). |
+| `npm run compat` | Asserts the declared DSH range with the running installation's own compatibility evaluator (requires `DSH_INSTALL_DIR`, or `--app-boot <path>`). |
 
-Run both before opening a change; `npm run check` is fast and catches syntax
-errors, while `npm test` exercises behavior.
+Run `check` and `test` before opening a change; `npm run check` is fast and
+catches syntax errors, while `npm test` exercises behavior. `npm run compat`
+only matters when the DSH compatibility range changes — see
+[compatibility.md](compatibility.md).
 
 The suite spans the test files listed below, and the exact number of tests
 grows as the suites are extended — run `npm test` for the current count. Both
@@ -72,7 +75,7 @@ test/
 | `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, turn-dedupe recording on write and cleanup on forget, and error mapping. |
 | `api` | The host-facing HTTP API, trust checks, actions, and error mapping. |
 | `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, the short-message gate suppressing both capture and injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. |
-| `manifest` | Package/exports/bundle patch/locales/docs consistency, and the no-icon contract. |
+| `manifest` | Package/exports/bundle patch/locales/docs consistency, the DSH compatibility range, and the no-icon contract. |
 | `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring and accessibility, action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
 
 The `integration` suite is the end-to-end proof; the `api` suite covers the

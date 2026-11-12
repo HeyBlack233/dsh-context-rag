@@ -70,6 +70,37 @@ test('package.json: dsh bundle and client wiring', () => {
   );
 });
 
+test('package.json: dsh compatibility range is declared, shared, and bounded', () => {
+  const pkg = readJson('package.json');
+  const range = pkg.engines.dsh;
+  // `^0.2.1-rc.2` expands to `>=0.2.1-rc.2 <0.3.0-0`, so every 0.2.x release
+  // (including prereleases) is admitted while 0.3.0-alpha/rc and later are not.
+  // Widening the supported line is a policy change: update this assertion, the
+  // manifest, and docs/compatibility.md in the same commit.
+  assert.equal(range, '^0.2.1-rc.2', 'engines.dsh must stay ^0.2.1-rc.2');
+  // DSH >= 0.2.1-alpha.3 reads engines.dsh alone; older releases only read DSH
+  // peers, so both must declare the same range.
+  assert.equal(
+    pkg.peerDependencies['@deepseek-ai/dsh-tools'],
+    range,
+    'the dsh-tools peer must mirror engines.dsh for pre-0.2.1-alpha.3 hosts',
+  );
+  // An upper bound written as `<0.3.0` would also admit 0.3.0-alpha/rc because
+  // DSH evaluates ranges with semver's includePrerelease option.
+  for (const token of range.split(/\s+|\|\|/)) {
+    if (token.startsWith('<')) {
+      assert.ok(
+        token.endsWith('-0'),
+        `upper bound ${token} must use a -0 prerelease floor (e.g. <0.3.0-0)`,
+      );
+    }
+  }
+  // Tests run against one exact, tested dsh-tools version; the peer range
+  // above describes what the plugin accepts at runtime.
+  const devVersion = pkg.devDependencies['@deepseek-ai/dsh-tools'];
+  assert.match(devVersion, /^0\.2\.2-rc\.2$/, 'devDependency must pin the tested version');
+});
+
 test('package.json: files array covers all shipped artifacts', () => {
   const pkg = readJson('package.json');
   for (const entry of [
@@ -169,6 +200,7 @@ test('docs/README.md links every document and each target exists', () => {
     'testing.md',
     'security-and-privacy.md',
     'operations.md',
+    'compatibility.md',
   ];
   for (const doc of docs) {
     assert.ok(

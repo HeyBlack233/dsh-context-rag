@@ -485,3 +485,29 @@ test("capture: attach wires the handlers and returns a disposer", async (t) => {
   disposer();
   assert.equal(handlers.size, 0);
 });
+
+test("capture: dispose tolerates a context whose `off` property throws", async (t) => {
+  const home = await makeHome(t);
+  const db = fakeDb();
+  const capture = createCapture({ db, configStore: fakeConfigStore(home), logger: null });
+
+  const disposed = [];
+  const ctx = {
+    on(type) {
+      return () => disposed.push(type);
+    },
+    // Cordis contexts have no `off` method and throw on unknown service
+    // property reads, so the disposer must rely on `on`'s returned handles.
+    get off() {
+      throw new Error('cannot get property "off" without inject');
+    },
+  };
+  const disposer = capture.attach(ctx);
+  assert.doesNotThrow(() => disposer());
+  disposer();
+  assert.deepEqual(disposed.sort(), [
+    "agent/turn-stopping",
+    "session/disposed",
+    "session/event",
+  ]);
+});

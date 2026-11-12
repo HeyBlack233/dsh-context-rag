@@ -64,6 +64,17 @@ dsh plugin add /path/to/dsh-context-rag
 
 or use the Plugins page in the DSH Web GUI and choose the local install flow.
 
+## Compatibility
+
+Supports DSH `0.2.1-rc.2` through the rest of the `0.2.x` line
+(`^0.2.1-rc.2`, equivalent to `>=0.2.1-rc.2 <0.3.0-0`), declared as
+`engines.dsh` and mirrored on the `@deepseek-ai/dsh-tools` peer so hosts before
+`0.2.1-alpha.3` reach the same answer. `0.3.0` prereleases and later are
+deliberately rejected until the range is reviewed. The exact `dsh-tools`
+dev dependency stays pinned to the newest tested release. See
+[DSH Compatibility](docs/compatibility.md) for the enforcement rules and the
+widening procedure.
+
 ## Quick configuration
 
 Open the plugin's page in the Plugins view of the DSH Web GUI and use the
@@ -125,6 +136,7 @@ Everything lives under `$DSH_HOME/context-rag`:
 - [Retrieval and Injection](docs/retrieval-and-injection.md)
 - [Configuration Page](docs/configuration-page.md)
 - [Testing](docs/testing.md)
+- [DSH Compatibility](docs/compatibility.md)
 - [Security and Privacy](docs/security-and-privacy.md)
 - [Operations](docs/operations.md)
 

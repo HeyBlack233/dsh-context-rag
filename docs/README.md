@@ -27,5 +27,6 @@ mode, with the dedupe history kept in a separate `recall-state.json`.
 | [retrieval-and-injection.md](retrieval-and-injection.md) | The read path: query, candidate scan over pairs and memories, scoring, and injection. |
 | [configuration-page.md](configuration-page.md) | The GUI config panel on the plugin page: Dashboard/Configuration tabs, status strip, actions, API-key handling, and bilingual UI. |
 | [testing.md](testing.md) | How to run checks/tests, what the suites cover, and manual verification. |
+| [compatibility.md](compatibility.md) | Supported DSH release range, how DSH enforces it, and how to widen or narrow it. |
 | [security-and-privacy.md](security-and-privacy.md) | Local storage, API-key handling, scope, and the prompt-injection caveat for pairs and memories. |
 | [operations.md](operations.md) | Data paths, backup, index maintenance, memory sync, failure modes, and upgrades. |

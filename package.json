@@ -25,17 +25,19 @@
     ".github/workflows/*.yml"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": "^0.2.1-rc.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.2"
   },
   "scripts": {
-    "check": "for f in index.js client.js lib/*.js test/*.js; do node --check \"$f\" || exit 1; done",
-    "test": "node --test test/*.test.js"
+    "check": "for f in index.js client.js lib/*.js test/*.js scripts/*.mjs; do node --check \"$f\" || exit 1; done",
+    "test": "node --test test/*.test.js",
+    "compat": "node scripts/compat-matrix.mjs"
   },
   "keywords": [
     "deepseek-harness",

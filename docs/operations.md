@@ -177,3 +177,11 @@ pairs in the outbox and retries within `maxAttempts`.
   `retrieval.allowSameSession = true` to restore same-session recall.
 - After upgrading, restart/activate the plugin so the worker and hooks are
   re-registered; startup reconciliation ensures the index is current.
+- **DSH release compatibility**: the bundle declares
+  `engines.dsh: ^0.2.1-rc.2`, mirroring it on the `@deepseek-ai/dsh-tools`
+  peer. A DSH release outside that range makes DSH skip the bundle at profile
+  startup or disable its row, with a compatibility message — the plugin does
+  not corrupt data and simply stays inactive. Upgrade to a release inside the
+  range, or widen the range as a reviewed change (see
+  [compatibility.md](compatibility.md)); do not rely on a per-profile
+  exemption as a permanent fix.

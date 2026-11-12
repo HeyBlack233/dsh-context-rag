@@ -104,3 +104,13 @@ Release Date: TBD
   the internal turn-dedupe detail and write-trigger guidance were removed,
   shrinking the model-visible tool schemas with unchanged runtime behavior.
 - Tests, documentation, and a CI workflow covering the plugin.
+- **DSH compatibility range**: `engines.dsh` and the `@deepseek-ai/dsh-tools`
+  peer now declare `^0.2.1-rc.2` (`>=0.2.1-rc.2 <0.3.0-0`) instead of pinning a
+  single release, so every current `0.2.x` DSH (including prereleases) is
+  accepted while `0.3.0` prereleases and later still require a review. The
+  tested `dsh-tools` dev dependency stays exact. See
+  [docs/compatibility.md](docs/compatibility.md).
+- **Clean disposal on older hosts**: the capture listeners now unregister
+  through the disposers returned by `ctx.on` and probe `ctx.off` defensively.
+  Cordis contexts without an `off` method throw on the property read (observed
+  on dsh `0.2.1-rc.2` during plugin disposal).
