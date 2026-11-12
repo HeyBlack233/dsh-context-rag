@@ -702,8 +702,18 @@ function execWithoutAgent() {
       // type parameter: enum global/workspace, required.
       assert.deepEqual(def.parameters.properties.type.enum, ["global", "workspace"], `${name}: type enum`);
       assert.ok(def.parameters.required.includes("type"), `${name}: type must be required`);
-      // No caller-supplied cwd parameter on any tool.
+      // No caller-supplied cwd parameter on any tool, and the shared `type`
+      // description says so once instead of repeating it in every tool
+      // description.
       assert.equal(def.parameters.properties.cwd, undefined, `${name}: no cwd parameter`);
+      assert.ok(
+        def.parameters.properties.type.description.includes("No path argument"),
+        `${name}: type description must state that no path argument exists`,
+      );
+      assert.ok(
+        !def.description.includes("working directory is taken"),
+        `${name}: tool description must not repeat the cwd caveat`,
+      );
       // Output root is a closed object.
       assert.equal(def.output.schema.type, "object");
       assert.equal(def.output.schema.additionalProperties, false, `${name}: output must be closed`);
@@ -736,21 +746,32 @@ function execWithoutAgent() {
     assert.equal(get.properties.content.type, "string");
   });
 
-  test("tool descriptions encode the write/forget usage rules", () => {
+  test("tool descriptions encode usage rules and parameters encode input rules", () => {
     const tools = registerTools(makeDeps());
 
     const write = tools.byName("memory_write").description;
     assert.ok(write.includes("memory_list"), "write must require listing the directory first");
-    assert.ok(/explicitly asks/.test(write), "write must mention an explicit user request");
-    assert.ok(/worth recalling|valuable/.test(write), "write must mention agent-judged long-term value");
     assert.ok(write.includes("overwrite"), "write must mention overwriting same-topic memories");
-    assert.ok(/English/.test(write), "write must require English name/description");
-    assert.ok(/300/.test(write), "write must suggest the content length limit");
-    assert.ok(/hyphens/.test(write), "write must state the name charset");
+
+    const nameParameter = tools.byName("memory_write").parameters.properties.name;
+    assert.ok(/English/.test(nameParameter.description), "name parameter must require English");
+    assert.ok(/hyphens/.test(nameParameter.description), "name parameter must state the charset");
+    assert.ok(/MEMORY/.test(nameParameter.description), "name parameter must reserve MEMORY");
+
+    const descriptionParameter = tools.byName("memory_write").parameters.properties.description;
+    assert.ok(/English/.test(descriptionParameter.description), "description parameter must require English");
+
+    const contentParameter = tools.byName("memory_write").parameters.properties.content;
+    assert.ok(/300/.test(contentParameter.description), "content parameter must suggest the length limit");
 
     const forget = tools.byName("memory_forget").description;
     assert.ok(/ONLY when the user explicitly asks/.test(forget), "forget must require an explicit user request");
-    assert.ok(/exactly match/.test(forget), "forget must require exact name+description match");
+
+    const forgetDescriptionParameter = tools.byName("memory_forget").parameters.properties.description;
+    assert.ok(/exactly/.test(forgetDescriptionParameter.description), "forget must require exact name+description match");
+
+    const get = tools.byName("memory_get").description;
+    assert.ok(get.includes("memory_list"), "get must point at memory_list for discovery");
   });
 
   // -------------------------------------------------------------------------

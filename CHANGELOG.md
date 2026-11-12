@@ -97,4 +97,10 @@ Release Date: TBD
   `.forgotten` files are removed. There is no real-time file watcher.
 - Memories are treated like retrieved pairs: read-only, **untrusted** reference
   material with the same fixed warning.
+- Agent tool definitions: the `memory_list` / `memory_get` / `memory_write` /
+  `memory_forget` descriptions now state each rule once and leave input rules
+  (charset, reserved `MEMORY`, length, exact-match requirement) on the
+  parameters; the repeated cwd caveat moved to the shared `type` parameter and
+  the internal turn-dedupe detail and write-trigger guidance were removed,
+  shrinking the model-visible tool schemas with unchanged runtime behavior.
 - Tests, documentation, and a CI workflow covering the plugin.
