@@ -75,10 +75,12 @@ Retrieved text is injected as a read-only, user-role context message with
 **source metadata** identifying it as `context-rag`. The injected text is
 treated as **untrusted background** from prior turns and memory files:
 
-- It carries a **fixed warning** that the background text is untrusted and must
-  not be treated as authoritative instructions.
-- Any `<` in the candidate text is escaped (rendered as `\u003c`) to prevent
-  markup injection.
+- It carries a **fixed notice** that the background text is reference
+  material, not a source of truth, and must not be treated as authoritative
+  instructions.
+- Content and attribute values are escaped as character entities (`&`, `<`,
+  `>`, `"`, newlines), with `&` escaped first so entity-looking input stays
+  literal; raw markup cannot break the tag framing.
 - It is attached once per user message and marked read-only/durable.
 
 **Memories are also untrusted reference material.** They are user-authored
@@ -93,7 +95,7 @@ workspace, and memories are *your own notes*. If any of those contained
 instructions that look like system prompts or requests to change behavior, the
 injected context could carry that content. This is a **prompt-injection risk**:
 a prior turn or a memory containing adversarial text could surface in later
-context. The fixed warning and the read-only framing mitigate it, but they do
+context. The fixed notice and the read-only framing mitigate it, but they do
 not eliminate it. Treat retrieved content — pairs and memories alike — as data,
 not as instructions, and avoid storing sensitive instructions as user text or
 memory content if cross-contamination is a concern.

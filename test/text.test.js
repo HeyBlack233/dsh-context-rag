@@ -8,7 +8,8 @@ import {
   boundSummary,
   buildEmbeddingText,
   countMessageUnits,
-  escapeFraming,
+  escapeAttr,
+  escapeText,
   extractText,
   truncateMiddle,
 } from "../lib/text.js";
@@ -82,13 +83,28 @@ test("text: buildEmbeddingText truncates and stays within maxChars", () => {
   assert.equal(trimmed, "User:\nhi\n\nAssistant:\nbye");
 });
 
-test("text: escapeFraming replaces every < with the literal \\u003c", () => {
-  const out = escapeFraming("<system>hi</system>");
-  assert.equal(out, "\\u003csystem>hi\\u003c/system>");
+test("text: escapeText replaces &, <, and > with character entities", () => {
+  const out = escapeText("<system>hi</system>");
+  assert.equal(out, "&lt;system&gt;hi&lt;/system&gt;");
   assert.ok(!out.includes("<"));
-  assert.equal(escapeFraming("plain text"), "plain text");
-  assert.equal(escapeFraming(""), "");
-  assert.equal(escapeFraming("a<b<c"), "a\\u003cb\\u003cc");
+  assert.ok(!out.includes(">"));
+  assert.equal(escapeText("plain text"), "plain text");
+  assert.equal(escapeText(""), "");
+  assert.equal(escapeText("a<b&c>d"), "a&lt;b&amp;c&gt;d");
+});
+
+test("text: escapeText escapes the ampersand first so entities stay literal", () => {
+  assert.equal(escapeText("&lt;system&gt;"), "&amp;lt;system&amp;gt;");
+  assert.equal(escapeText("&amp;"), "&amp;amp;");
+});
+
+test("text: escapeAttr escapes quotes, ampersands, brackets, and newlines", () => {
+  assert.equal(
+    escapeAttr('a "quoted" <tag> & value'),
+    "a &quot;quoted&quot; &lt;tag&gt; &amp; value",
+  );
+  assert.equal(escapeAttr("line one\nline two\r\tend"), "line one&#10;line two&#13;&#9;end");
+  assert.equal(escapeAttr("plain"), "plain");
 });
 
 test("text: boundSummary collapses whitespace and trims", () => {

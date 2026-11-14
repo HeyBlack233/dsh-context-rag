@@ -383,8 +383,8 @@ test("captures a pair, indexes it, and injects related context with dedupe", asy
   assert.ok(added.content[0].text.includes("alpha question"), "injected text must carry the user text");
   assert.ok(added.content[0].text.includes("alpha answer"), "injected text must carry the assistant text");
   assert.ok(
-    added.content[0].text.includes("untrusted reference material"),
-    "injected text must carry the fixed warning",
+    added.content[0].text.includes("Use them as reference, not source of truth"),
+    "injected text must carry the reference-not-truth notice",
   );
 
   // Re-emit the same payload: the same user message is deduped, so no second
@@ -759,12 +759,14 @@ test("renderInjection never exceeds maxChars and truncates oversized entries", (
     { userText: "u".repeat(150), assistantText: "a".repeat(150), createdAt: now, cwd: "/work" },
     { userText: "x".repeat(150), assistantText: "y".repeat(150), createdAt: now, cwd: "/other" },
   ];
-  const maxChars = 400;
+  // The HTML-like framing has a larger fixed cost than the old header, so the
+  // budget must leave room for the truncation marker inside the first entry.
+  const maxChars = 520;
   const rendered = renderInjection({ pairs, maxChars });
 
   assert.ok(rendered, "renderInjection must produce a result within the budget");
   assert.ok(rendered.text.length <= maxChars, `text (${rendered.text.length}) must not exceed maxChars`);
-  assert.ok(rendered.text.includes("Context RAG:"), "rendered text must include the header");
+  assert.ok(rendered.text.includes("Retrieved related past conversation turns and memories"), "rendered text must include the notice");
   assert.ok(rendered.text.includes("…[truncated]…"), "oversized entries must be truncated");
   assert.ok(rendered.summary.includes("Retrieved"));
 });
@@ -840,13 +842,13 @@ test("memories: global + current workspace memories embed and recall; other work
   assert.ok(allIds.has(work.record.pairId));
   assert.ok(!allIds.has(other.record.pairId), "scope=all must not pull in the other-workspace memory");
 
-  // End-to-end injection renders the memories as `Memory · global|workspace`
-  // entries alongside the conversation pair.
+  // End-to-end injection renders the memories as <memory scope="global">
+  // and <memory scope="workspace"> entries alongside the conversation pair.
   const decision = await emitInjection(injectorCtx, session, 2, "alpha follow up", "u-mem");
   const added = decision.messages.filter((m) => m.source?.kind === "context-rag");
   assert.equal(added.length, 1, "memories must be injectable through the pre-step hook");
-  assert.ok(added[0].content[0].text.includes("Memory · global"), "the global memory entry must be rendered");
-  assert.ok(added[0].content[0].text.includes("Memory · workspace"), "the workspace memory entry must be rendered");
+  assert.ok(added[0].content[0].text.includes('<memory scope="global"'), "the global memory entry must be rendered");
+  assert.ok(added[0].content[0].text.includes('<memory scope="workspace"'), "the workspace memory entry must be rendered");
   assert.ok(added[0].content[0].text.includes("alpha global memory content"));
   assert.ok(added[0].content[0].text.includes("alpha work memory content"));
 });

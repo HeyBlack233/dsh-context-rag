@@ -111,7 +111,7 @@ test("appends one context-rag notice message for a new direct user message", asy
   assert.equal(added.source.form, "notice");
   assert.ok(added.source.summary.length <= 120);
   assert.equal(added.content[0].type, "text");
-  assert.ok(added.content[0].text.includes("Context RAG:"));
+  assert.ok(added.content[0].text.includes("Use them as reference, not source of truth"));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].query, "hello");
   assert.equal(calls[0].cwd, "/proj");

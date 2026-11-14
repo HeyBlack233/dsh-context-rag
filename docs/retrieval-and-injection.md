@@ -85,9 +85,10 @@ apply to both: cosine scoring, `scanLimit`, `candidateLimit` (rerank
   successful `memory_write` records the written memory at the current turn too
   (see [Bookkeeping](#bookkeeping-records-injections-and-memory-writes)).
 - Memory results render inside the same framed message as pairs, with the same
-  `<` escaping and untrusted-background warning. Each memory entry is headed
-  `[n] Memory · global|workspace · <name> · score: <score>` followed by its
-  content (see [security-and-privacy.md](security-and-privacy.md)).
+  entity escaping and reference-not-truth notice. Each memory is rendered as
+  `<memory scope="global|workspace" name="..." score="...">` with its content
+  in a `<content>` element (see
+  [security-and-privacy.md](security-and-privacy.md)).
 
 ### Bookkeeping records injections and memory writes
 
@@ -187,11 +188,34 @@ without re-injecting.
 
 ### Rendered text
 
-The injected text has a fixed framing plus a per-candidate header, and the
-candidate text is escaped (any `<` is rendered as `\u003c`) to avoid markup
-injection. The message also carries an explicit warning that the retrieved
-background text is **untrusted** — it comes from prior turns or memory files
-and must not be treated as authoritative instructions.
+The injected text is an HTML-like structure: a `<context-rag>` root whose
+`count` attribute is the number of rendered entries, one `<notice>` element
+carrying the fixed reference-not-truth notice, and one element per candidate:
+
+```html
+<context-rag count="2">
+<notice>Retrieved related past conversation turns and memories. Use them as reference, not source of truth</notice>
+<turn date="2026-11-10 18:03" workspace="dsh-context-rag" score="0.998">
+<user>how do I index a vector?</user>
+<assistant>Use SQLite with an FTS or a dedicated ANN index.</assistant>
+</turn>
+<memory scope="workspace" name="Project style" score="0.993">
+<content>Prefer single quotes and 80-column lines.</content>
+</memory>
+</context-rag>
+```
+
+Metadata lives in attributes: `date` and `score` are omitted when unknown, and
+the workspace is the `cwd` basename (`unknown` when missing). Content and
+attribute values are escaped as character entities (`&`, `<`, `>`, `"`,
+newlines), with `&` escaped first so entity-looking input stays literal; raw
+markup therefore cannot break the framing. An entry that does not fit whole is
+dropped from the tail; when even the first entry cannot fit whole, its text
+elements are truncated in the middle while the tags stay balanced, and entries
+that still cannot fit `maxContextChars` are omitted. The message also carries
+a fixed notice telling the model to use the retrieved background text as
+reference, not as a source of truth — it comes from prior turns or memory
+files and must not be treated as authoritative instructions.
 
 ### Visibility
 

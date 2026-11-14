@@ -24,7 +24,12 @@ Release Date: TBD
   optional rerank via a Jina / Cohere / SiliconFlow-compatible `/v1/rerank`
   endpoint.
 - Pre-step durable context injection: retrieved pairs are injected as a
-  read-only context message shown in the Trajectory.
+  read-only context message shown in the Trajectory. The injected text is an
+  HTML-like tagged structure (`<context-rag>`, `<notice>`, `<turn>`,
+  `<memory>`, `<user>`, `<assistant>`, `<content>`) with metadata in
+  attributes, entity-escaped content, and a fixed notice that the retrieved
+  turns are reference material rather than a source of truth, replacing the
+  previous plain `[n] … User:/Assistant:` layout.
 - Short-message gate: `retrieval.minMessageLength` (default `8`, `0` disables)
   skips passive recall (pairs and memories) and capture for user messages
   below the threshold, so such turns never enter the JSONL log, SQLite index,
