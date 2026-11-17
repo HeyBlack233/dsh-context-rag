@@ -1759,7 +1759,7 @@ window.__ModuleLoader__.load({
           const style = document.createElement("style");
           style.id = "dsh-context-rag-styles";
           style.textContent = [
-            ".dscr-page { width: 100%; max-width: 840px; box-sizing: border-box; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; }",
+            ".dscr-page { width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; }",
             ".dscr-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 16px; color: var(--dsw-alias-label-primary, inherit); } .dscr-title { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--dsw-alias-label-primary, inherit); }",
             ".dscr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; } .dscr-stat { background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 8px 12px; }",
             ".dscr-stat-value { font-size: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-stat-label { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }",

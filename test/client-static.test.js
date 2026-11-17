@@ -297,17 +297,19 @@ test('client.js: log list is a non-live log region', () => {
   assert.ok(text.includes('logsLabel'), 'log list must carry the logsLabel aria-label');
 });
 
-test('client.js: page sizing is stable across tabs', () => {
+test('client.js: page fills the plugin detail column', () => {
   const text = readClient();
-  // The page is a flex child of the host section; auto margins alone make its
-  // width depend on the active tab's content. Explicit width + border-box
-  // keeps both tab panels at one centered width.
-  assert.ok(
-    text.includes(
-      '.dscr-page { width: 100%; max-width: 840px; box-sizing: border-box;',
-    ),
-    'page must fill its container with a stable border-box width',
-  );
+  const rule = text.match(/\.dscr-page \{([^}]*)\}/)?.[1];
+  assert.ok(rule, 'must define the dscr-page base rule');
+  // The page is a flex child of the host detail section, whose siblings
+  // (Components, Versions, Source) use the section's full column width. A
+  // max-width cap, outer margin, or page padding would make the panel and its
+  // cards narrower than those sections.
+  assert.match(rule, /width: 100%/, 'page must fill its container');
+  assert.match(rule, /box-sizing: border-box/, 'page must include no implicit outer box');
+  assert.ok(!rule.includes('max-width'), 'page must not cap its width below the section');
+  assert.ok(!rule.includes('padding'), 'page must not inset itself from the section edges');
+  assert.ok(!rule.includes('margin'), 'page must not add outer spacing');
 });
 
 test('client.js: EN/ZH parity for every UI translation key', () => {

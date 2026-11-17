@@ -48,6 +48,9 @@ Release Date: TBD
   Configuration tab keeps the four settings cards plus a collapsible advanced
   JSON view and save/reload/test actions, and the active tab is remembered
   across refreshes. Switching tabs preserves unsaved edits.
+- The config panel now fills the plugin detail column instead of capping at
+  840 px with page padding, so its cards and tabs line up with the
+  **Components**, **Versions**, and **Source** sections.
 - Same-session recall is now **off by default**: `retrieval.allowSameSession`
   (default `false`) excludes pairs from the current session in all recall modes;
   set it to `true` to allow them. Forked/derived sessions count as different

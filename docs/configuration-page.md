@@ -45,6 +45,10 @@ Below the strip are four tabs, in order — **Dashboard**, **Browse**,
 tabs never discards edits: the Dashboard and Configuration tabs render from the
 same page state.
 
+The panel fills the plugin detail column without its own width cap, outer
+padding, or centering margin, so its cards and tab strip line up with the
+sibling **Components**, **Versions**, and **Source** sections.
+
 ### Dashboard
 
 The Dashboard is the monitoring and index-maintenance view. It is read-only
