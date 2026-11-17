@@ -121,9 +121,12 @@ never refreshes or polls by itself.
     *Rerank unavailable* note. See
     [retrieval-and-injection.md](retrieval-and-injection.md#manual-search-browse).
 - **Split view** — the list (left) and the detail of the selected entry
-  (right) are laid out side by side and **stack vertically at ≤ 720 px**
-  (`@media (max-width: 720px)` flips the split to a column; the list is capped
-  at 45 vh on narrow screens).
+  (right) are laid out side by side inside a **fixed-height** split
+  (`68 vh`) so selecting an entry never resizes the card: the list scrolls
+  its own rows and the detail body scrolls its metadata and full text
+  independently. The panels stack vertically at **≤ 720 px**
+  (`@media (max-width: 720px)` flips the split to a column at `82 vh`, with the
+  list taking the top 40 % and both panels still scrolling internally).
 - **List rows** — each row shows a status pill plus the entry identity:
   memory rows show the name, a Global/Workspace badge, description, and
   creation time; pair rows show a whitespace-normalized **preview of the user

@@ -434,6 +434,20 @@ test('client.js: browse split-view and status-pill classes and row/mode aria att
   ]) {
     assert.ok(text.includes(aria), `must use ${aria}`);
   }
+  // The Browse card keeps a fixed height: selecting an entry must never grow
+  // the card. The list and the detail body scroll inside their own panels.
+  assert.ok(
+    text.includes('.dscr-browse-split { display: flex; align-items: stretch; gap: 12px; height: 68vh;'),
+    'the Browse split must have a fixed height',
+  );
+  assert.ok(
+    text.includes('.dscr-browse-list-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto;'),
+    'the Browse list must scroll inside the fixed-height panel',
+  );
+  assert.ok(
+    text.includes('.dscr-browse-detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }'),
+    'the Browse detail body must scroll inside the fixed-height panel',
+  );
 });
 
 test('client.js: Browse render uses translation keys only, no hard-coded visible strings', () => {

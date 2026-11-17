@@ -145,9 +145,12 @@ Release Date: TBD
   or memory bodies, query text, or API keys.
 - **Browse tab** on the configuration page (second tab, after **Dashboard**):
   browse stored memories and message pairs per scope (`All` / `Global` /
-  workspaces; `Global` is memories-only) in a split list/detail view that
-  stacks vertically on narrow screens (≤ 720 px). Lists load lazily on tab
-  entry — no polling — one page of 20 at a time with a **Load more** button.
+  workspaces; `Global` is memories-only) in a fixed-height split list/detail
+  view (`68 vh`) where the list and the detail body scroll independently, so
+  selecting an entry never changes the card height; on narrow screens
+  (≤ 720 px) the split stacks vertically at `82 vh` with internal scrolling.
+  Lists load lazily on tab entry — no polling — one page of 20 at a time with
+  a **Load more** button.
   Pair rows preview the user message (200 characters,
   whitespace-normalized); the detail shows the full text capped at 200,000
   characters per field with a truncation note, plus metadata, index status,
