@@ -23,7 +23,8 @@ $DSH_HOME/context-rag/
 │           ├── MEMORY.md
 │           └── <name>.md
 ├── index.sqlite         # rebuildable index (pair and memory vectors)
-└── recall-state.json    # turn-dedupe bookkeeping (separate, disposable)
+├── recall-state.json    # turn-dedupe bookkeeping (separate, disposable)
+└── logs/                # manual log exports (optional; created by Write to disk)
 ```
 
 ## config.json
@@ -211,6 +212,23 @@ Schema (JSON, version 1):
   warns and continues with empty state, so retrieval/injection keeps working
   without turn dedupe. Memory writes still succeed; they are simply not
   recorded.
+
+## Log files (logs/)
+
+`logs/` holds **manually exported** log files and exists only after you use
+**Write to disk** on the Logs tab of the configuration page (see
+[configuration-page.md](configuration-page.md)). There is no automatic logging
+to disk.
+
+- Each export writes a new plain-text file,
+  `context-rag-YYYYMMDD-HHmmss-SSS.log` (host-local time; a `-1`/`-2` suffix on
+  a name collision), with mode `0600` and a header recording the export time,
+  the configured limit, and the number of entries.
+- Log entries live **only in an in-memory ring buffer** (the latest
+  `logging.bufferSize` entries) and are **never written to JSONL or SQLite**.
+  Exported files are diagnostics, not a source of truth: they are not indexed,
+  not rotated, and safe to delete at any time (see
+  [operations.md](operations.md)).
 
 ## Write path
 

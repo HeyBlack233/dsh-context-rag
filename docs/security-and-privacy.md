@@ -31,6 +31,27 @@ bounded by `retrieval.dedupeStateRetentionDays` and
 deleting it only resets dedupe history (pairs and memories become eligible again) and never
 touches the JSONL log or the index.
 
+## Logs stay in memory
+
+The plugin's own logger is teed into an **in-memory ring buffer** that keeps
+only the latest `logging.bufferSize` entries (default `200`, integer
+`1..5000`); see [operations.md](operations.md).
+
+- **Nothing is written to disk by default.** Logs are lost on plugin restart,
+  and entries overwritten by newer ones are unrecoverable.
+- **Log entries contain no message or memory content.** Entries never include
+  user or assistant message bodies, memory bodies, query text, or API keys —
+  only ids, counts, timings, scope/name, and error messages. Debug entries
+  (capture outcomes, index batches, retrieval candidates and topK, injection
+  results) follow the same rule and are collected only while `logging.debug` is
+  enabled.
+- **Exporting is user-initiated.** The **Write to disk** button on the Logs tab
+  writes the current window to a new file under `<home>/logs/` with mode `0600`
+  (readable only by the owning user). Such files are plaintext and may contain
+  paths and ids; treat them like the pair log.
+- Deleting exported files is safe and does not affect any other data (see
+  [operations.md](operations.md)).
+
 ## API keys
 
 - API keys are stored in `config.json` under the data home, written

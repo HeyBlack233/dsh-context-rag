@@ -10,17 +10,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { API_PATH, MAX_BODY_BYTES, dispatch, handle, registerApi } from "../lib/api.js";
+import { ConfigError } from "../lib/config.js";
+import { createLogBuffer } from "../lib/log-buffer.js";
 
 /** Home used by the default fakes; never created, so fs-derived stats are 0. */
 const MISSING_HOME = join(tmpdir(), `dsh-rag-api-missing-${process.pid}`);
 
 /** Build a full fake dependency bag plus call counters. */
 function makeDeps(overrides = {}) {
-  const calls = { save: [], reconcile: 0, reindex: 0, clear: 0, embeddingTests: 0, rerankTests: 0 };
+  const calls = { save: [], reconcile: 0, reindex: 0, clear: 0, embeddingTests: 0, rerankTests: 0, setLimit: 0, setDebug: 0 };
+  // The fake log buffer is a thin wrapper over the real implementation so
+  // `exportTo` (file writes) behaves exactly like production.
+  const buffer = createLogBuffer({ limit: 200 });
+  buffer.record("info", "test entry");
+  const logs = {
+    get limit() {
+      return buffer.limit;
+    },
+    get debug() {
+      return buffer.debug;
+    },
+    entries: () => buffer.entries(),
+    setLimit: (n) => {
+      calls.setLimit += 1;
+      return buffer.setLimit(n);
+    },
+    setDebug: (b) => {
+      calls.setDebug += 1;
+      return buffer.setDebug(b);
+    },
+    exportTo: (dir) => buffer.exportTo(dir),
+  };
   const deps = {
     configStore: {
       home: MISSING_HOME,
@@ -64,6 +88,7 @@ function makeDeps(overrides = {}) {
       status: () => ({ lastError: null }),
     },
     initError: null,
+    logs,
     ...overrides,
   };
   return { deps, calls };
@@ -285,6 +310,202 @@ test("index.rebuild and index.clear delegate and return status", async () => {
   assert.equal(calls.clear, 1);
   assert.equal(cleared.ok, true);
   assert.ok(cleared.value.runtime);
+});
+
+// ---------------------------------------------------------------------------
+// logs.get
+// ---------------------------------------------------------------------------
+
+test("logs.get: returns the buffer snapshot {limit, debug, entries}", async () => {
+  const { deps } = makeDeps();
+  const result = await dispatch({ action: "logs.get" }, deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.limit, 200);
+  assert.equal(result.value.debug, false);
+  assert.ok(Array.isArray(result.value.entries));
+  assert.equal(result.value.entries.length, 1, "the pre-seeded entry must be present");
+  assert.equal(result.value.entries[0].level, "info");
+  assert.equal(result.value.entries[0].message, "test entry");
+  assert.equal(typeof result.value.entries[0].time, "string");
+});
+
+test("logs.get: a missing buffer (or null deps) is NOT_READY 503", async () => {
+  const { deps } = makeDeps();
+
+  const noLogs = await dispatch({ action: "logs.get" }, { ...deps, logs: null });
+  assert.equal(noLogs.ok, false);
+  assert.equal(noLogs.error.code, "NOT_READY");
+  assert.equal(noLogs.error.status, 503);
+
+  const nullDeps = await dispatch({ action: "logs.get" }, null);
+  assert.equal(nullDeps.ok, false);
+  assert.equal(nullDeps.error.code, "NOT_READY");
+  assert.equal(nullDeps.error.status, 503);
+});
+
+// ---------------------------------------------------------------------------
+// logs.configure
+// ---------------------------------------------------------------------------
+
+test("logs.configure: bufferSize only persists and resizes the buffer", async () => {
+  const { deps, calls } = makeDeps();
+  const result = await dispatch({ action: "logs.configure", payload: { bufferSize: 300 } }, deps);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.save, [{ logging: { bufferSize: 300 } }]);
+  assert.equal(calls.setLimit, 1);
+  assert.equal(calls.setDebug, 0);
+  assert.equal(result.value.limit, 300);
+  assert.equal(result.value.debug, false);
+});
+
+test("logs.configure: debug only toggles capture without touching the limit", async () => {
+  const { deps, calls } = makeDeps();
+  const result = await dispatch({ action: "logs.configure", payload: { debug: true } }, deps);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.save, [{ logging: { debug: true } }]);
+  assert.equal(calls.setLimit, 0);
+  assert.equal(calls.setDebug, 1);
+  assert.equal(result.value.debug, true);
+  assert.equal(result.value.limit, 200);
+});
+
+test("logs.configure: rejects invalid payloads without calling save or setters", async () => {
+  const { deps, calls } = makeDeps();
+  const invalid = [
+    "not-an-object",
+    null,
+    [1, 2],
+    {},
+    { unknownOnly: 1 }, // only unknown fields
+    { bufferSize: 0 },
+    { bufferSize: 5001 },
+    { bufferSize: 2.5 },
+    { bufferSize: "300" },
+    { bufferSize: NaN },
+    { bufferSize: undefined }, // key present, value undefined
+    { debug: "yes" },
+    { debug: 1 },
+    { debug: undefined },
+    { bufferSize: 300, debug: "yes" },
+  ];
+  for (const payload of invalid) {
+    const result = await dispatch({ action: "logs.configure", payload }, deps);
+    assert.equal(result.ok, false, `payload ${JSON.stringify(payload)} must be rejected`);
+    assert.equal(result.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(payload)}`);
+    assert.equal(result.error.status, 400, `payload ${JSON.stringify(payload)}`);
+  }
+  assert.equal(calls.save.length, 0, "save must not be called for invalid payloads");
+  assert.equal(calls.setLimit, 0, "setLimit must not be called for invalid payloads");
+  assert.equal(calls.setDebug, 0, "setDebug must not be called for invalid payloads");
+});
+
+test("logs.configure: unknown fields are ignored alongside recognized ones", async () => {
+  const { deps, calls } = makeDeps();
+  const result = await dispatch(
+    { action: "logs.configure", payload: { bufferSize: 5, unknown: "x" } },
+    deps,
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.save, [{ logging: { bufferSize: 5 } }]);
+  assert.equal(result.value.limit, 5);
+});
+
+test("logs.configure: a ConfigError from save maps to INVALID_CONFIG 400 and leaves the buffer untouched", async () => {
+  const { deps, calls } = makeDeps();
+  deps.configStore.save = async () => {
+    throw new ConfigError("Invalid config: \"logging.bufferSize\" must be an integer between 1 and 5000", {
+      field: "logging.bufferSize",
+      reason: "must be an integer between 1 and 5000",
+    });
+  };
+  const before = deps.logs.limit;
+
+  const result = await dispatch({ action: "logs.configure", payload: { bufferSize: 300 } }, deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "INVALID_CONFIG");
+  assert.equal(result.error.status, 400);
+  assert.equal(result.error.details.field, "logging.bufferSize");
+  assert.equal(calls.setLimit, 0, "setLimit must not run after a failed save");
+  assert.equal(deps.logs.limit, before, "the buffer limit must be unchanged");
+});
+
+test("logs.configure: missing logs or config store is NOT_READY 503", async () => {
+  const { deps } = makeDeps();
+
+  const noLogs = await dispatch({ action: "logs.configure", payload: { bufferSize: 300 } }, { ...deps, logs: null });
+  assert.equal(noLogs.ok, false);
+  assert.equal(noLogs.error.code, "NOT_READY");
+  assert.equal(noLogs.error.status, 503);
+
+  const noStore = await dispatch({ action: "logs.configure", payload: { debug: true } }, { ...deps, configStore: null });
+  assert.equal(noStore.error.code, "NOT_READY");
+});
+
+// ---------------------------------------------------------------------------
+// logs.export
+// ---------------------------------------------------------------------------
+
+test("logs.export: writes a 0600 file under <home>/logs containing the buffered entries", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-rag-logs-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const base = makeDeps();
+  const deps = { ...base.deps, configStore: { ...base.deps.configStore, home: dir } };
+
+  const r1 = await dispatch({ action: "logs.export" }, deps);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.value.count, 1, "the pre-seeded entry must be exported");
+  assert.ok(r1.value.path.startsWith(join(dir, "logs")), "the path must live under <home>/logs");
+  assert.ok(existsSync(r1.value.path), "the exported file must exist");
+  assert.ok(readFileSync(r1.value.path, "utf8").includes("test entry"), "the file must contain the buffered entry");
+
+  // Each call writes a fresh file (timestamped), so consecutive paths differ.
+  const r2 = await dispatch({ action: "logs.export" }, deps);
+  assert.equal(r2.ok, true);
+  assert.notEqual(r2.value.path, r1.value.path, "a second export must produce a new file");
+  assert.ok(existsSync(r1.value.path), "the first export must still exist");
+});
+
+test("logs.export: a missing buffer, config store, or home is NOT_READY 503", async () => {
+  const { deps } = makeDeps();
+
+  const noLogs = await dispatch({ action: "logs.export" }, { ...deps, logs: null });
+  assert.equal(noLogs.ok, false);
+  assert.equal(noLogs.error.code, "NOT_READY");
+  assert.equal(noLogs.error.status, 503);
+
+  const noStore = await dispatch({ action: "logs.export" }, { ...deps, configStore: null });
+  assert.equal(noStore.error.code, "NOT_READY");
+  assert.equal(noStore.error.status, 503);
+
+  const emptyHome = await dispatch({ action: "logs.export" }, { ...deps, configStore: { ...deps.configStore, home: "" } });
+  assert.equal(emptyHome.error.code, "NOT_READY");
+  assert.equal(emptyHome.error.status, 503);
+});
+
+// ---------------------------------------------------------------------------
+// logs via HTTP
+// ---------------------------------------------------------------------------
+
+test("HTTP: logs.get returns 200 with ok body; logs.configure rejects an invalid body with 400", async () => {
+  const { deps } = makeDeps();
+
+  const ok = await post(deps, { body: jsonBody("logs.get") });
+  assert.equal(ok.res.statusCode, 200);
+  const body = JSON.parse(ok.res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.limit, 200);
+  assert.equal(body.value.entries.length, 1);
+
+  const bad = await post(deps, { body: jsonBody("logs.configure", { bufferSize: 0 }) });
+  assert.equal(bad.res.statusCode, 400);
+  const error = JSON.parse(bad.res.body).error;
+  assert.equal(error.code, "INVALID_PAYLOAD");
+  assert.equal(error.status, 400);
 });
 
 // ---------------------------------------------------------------------------

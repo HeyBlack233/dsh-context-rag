@@ -60,12 +60,18 @@ rather than disrupting the turn.
 | `lib/message.js` | Construct and manage context messages and their source metadata. |
 | `lib/inject.js` | Dedupe per user message, apply the short-message gate, attach the injected context message, and record the actually rendered candidates for turn dedupe. |
 | `lib/recall-state.js` | Persistent turn-dedupe state: per-(session, pair) last turn, timestamp, and count; entry removal for forgotten memories; retention pruning; atomic persistence. |
+| `lib/log-buffer.js` | In-memory ring buffer that tees the plugin logger (`ctx.logger`), keeps the latest `logging.bufferSize` entries (UTC time, level, message), serializes them as plain text, and writes manual exports. |
 | `lib/api.js` | Plugin-internal API surface (services exposed to the host). |
 | `client.js` | Web config page presented in the Harness GUI. |
 
 ## Lifecycle
 
-`index.js` boots on plugin activation:
+`index.js` boots on plugin activation. The log buffer is set up **before**
+configuration is loaded: `lib/log-buffer.js` tees `ctx.logger` into an in-memory
+ring buffer immediately, so early activation messages are captured. Right after
+the config is read, the persisted `logging.bufferSize` / `logging.debug` values
+are applied to the buffer, and `configStore.onChange` re-applies them whenever
+they change on the Logs page.
 
 1. Read the plugin row config and resolve the data home
    (`$DSH_HOME/context-rag/` by default).
@@ -103,6 +109,10 @@ state is written on every change, so no shutdown flush is needed.
 - **Fail-open read path and bookkeeping.** Retrieval errors never block the
   turn; recall-state failures degrade to no turn dedupe, never to a failed
   step or a failed memory write.
+- **Logs in memory by default.** Plugin log entries live in a bounded in-memory
+  ring buffer (latest `logging.bufferSize` entries) and are never written to
+  disk automatically; only an explicit export on the Logs tab writes them under
+  `logs/`.
 - **No external dependencies at runtime.** Embeddings come from a configurable
   HTTP endpoint; there is no external vector database. The reranker is optional.
 
@@ -113,3 +123,6 @@ state is written on every change, so no shutdown flush is needed.
 - The reranker is optional and disabled by default.
 - Memory files have no real-time watcher; manual edits are synchronized by the
   startup scan (see [operations.md](operations.md)).
+- Logs are kept in a bounded in-memory window (`logging.bufferSize`, default
+  `200`) and written to disk only on manual export (see
+  [operations.md](operations.md)).

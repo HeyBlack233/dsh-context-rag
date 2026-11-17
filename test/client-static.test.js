@@ -216,6 +216,79 @@ test('client.js: advanced JSON is a collapsible section inside configuration', (
   assert.ok(text.includes('setAdvancedOpen'), 'advanced section must toggle its open state');
 });
 
+test('client.js: logs is the third tab after dashboard and configuration', () => {
+  const text = readClient();
+  assert.ok(
+    text.includes('TAB_IDS = ["dashboard", "configuration", "logs"]'),
+    'TAB_IDS must list dashboard, configuration and logs',
+  );
+  const tabsIndex = text.indexOf('const tabs = ');
+  assert.ok(tabsIndex >= 0, 'must define the tabs array');
+  const tabsBlock = text.slice(tabsIndex);
+  assert.ok(
+    tabsBlock.includes('{ id: "logs", labelKey: "logsTab", content: logsCards }'),
+    'must add a logs tab entry labelled logsTab without a dirty marker',
+  );
+  assert.ok(
+    tabsBlock.indexOf('{ id: "configuration"') < tabsBlock.indexOf('{ id: "logs"'),
+    'logs must come after configuration in the tab order',
+  );
+});
+
+test('client.js: logs actions call logs.get, logs.configure and logs.export', () => {
+  const text = readClient();
+  for (const action of ['logs.get', 'logs.configure', 'logs.export']) {
+    assert.ok(text.includes(action), `must call the ${action} action`);
+  }
+  assert.ok(text.includes('logExport'), 'must render the Write to disk (logExport) button');
+  assert.ok(text.includes('logExportOk'), 'must confirm exports with the logExportOk message');
+});
+
+test('client.js: logs poll every 2000 ms only while the logs tab is active', () => {
+  const text = readClient();
+  assert.ok(text.includes('window.setInterval(poll, 2000)'), 'must poll every 2000 ms');
+  assert.ok(text.includes('window.clearInterval(timer)'), 'must clear the poll interval when leaving');
+  assert.ok(text.includes('activeTab !== "logs"'), 'must only poll while the logs tab is active');
+  assert.ok(text.includes('logPollError'), 'must show a local poll error message');
+  assert.ok(text.includes('logEpochRef'), 'must discard poll responses that raced a configure');
+});
+
+test('client.js: log limit input validates an integer between 1 and 5000', () => {
+  const text = readClient();
+  assert.ok(text.includes('min: 1, max: 5000, step: 1'), 'N input must be a 1..5000 integer field');
+  assert.ok(text.includes('n < 1 || n > 5000'), 'must reject N outside 1..5000');
+  assert.ok(text.includes('logLimitInvalid'), 'must report invalid N with logLimitInvalid');
+});
+
+test('client.js: patchConfigSnapshot syncs logging into both config snapshots', () => {
+  const text = readClient();
+  const start = text.indexOf('const patchConfigSnapshot');
+  assert.ok(start >= 0, 'must define the patchConfigSnapshot helper');
+  const marker = 'setSavedText((prev) => applyTo(prev));';
+  const end = text.indexOf(marker, start);
+  assert.ok(end > start, 'patchConfigSnapshot must patch the savedText snapshot');
+  const block = text.slice(start, end + marker.length);
+  assert.ok(block.includes('setConfigText((prev)'), 'must patch the configText snapshot');
+  assert.ok(block.includes('obj.logging = '), 'must write the logging section of the snapshot');
+  assert.ok(!block.includes('reload'), 'must not reload (would discard Configuration edits)');
+  assert.ok(
+    text.includes('patchConfigSnapshot({ bufferSize: value.limit })'),
+    'must patch bufferSize after applying N',
+  );
+  assert.ok(
+    text.includes('patchConfigSnapshot({ debug: value.debug })'),
+    'must patch debug after toggling it',
+  );
+});
+
+test('client.js: log list is a non-live log region', () => {
+  const text = readClient();
+  assert.ok(text.includes('role: "log"'), 'log list must have role="log"');
+  assert.ok(text.includes('"aria-live": "off"'), 'log list must not announce every poll');
+  assert.ok(text.includes('tabIndex: 0'), 'log list must be keyboard focusable for scrolling');
+  assert.ok(text.includes('logsLabel'), 'log list must carry the logsLabel aria-label');
+});
+
 test('client.js: page sizing is stable across tabs', () => {
   const text = readClient();
   // The page is a flex child of the host section; auto margins alone make its
@@ -249,6 +322,9 @@ test('client.js: EN/ZH parity for every UI translation key', () => {
     'configHelp', 'reload', 'save', 'testEmbedding', 'testRerank',
     'rebuild', 'clear', 'confirmClear', 'saved', 'cleared', 'rebuilt',
     'testOk', 'jsonInvalid', 'busy', 'ok', 'error',
+    'logsTab', 'logsTitle', 'logsHelp', 'logLimit', 'logApply', 'logDebug',
+    'logRefresh', 'logExport', 'logExportOk', 'logConfigured', 'logLimitInvalid',
+    'logLimitPending', 'logEmpty', 'logCount', 'logPollError', 'logsLabel',
   ];
   for (const key of requiredKeys) {
     const pattern = new RegExp(`${key}\\s*:`, 'g');

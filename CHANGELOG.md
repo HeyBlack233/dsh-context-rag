@@ -119,3 +119,24 @@ Release Date: TBD
   through the disposers returned by `ctx.on` and probe `ctx.off` defensively.
   Cordis contexts without an `off` method throw on the property read (observed
   on dsh `0.2.1-rc.2` during plugin disposal).
+- **Logs tab** on the configuration page: a third tab (after **Dashboard** and
+  **Configuration**) shows the plugin's own log entries — UTC ISO time, level
+  (`debug` / `info` / `warn` / `error`), and message — oldest to newest in a
+  scrollable list, auto-refreshing every 2 seconds while the tab is active and
+  stopping when you leave it. The tab offers an **N** input with **Apply**, an
+  **Enable debug** checkbox, **Refresh**, and **Write to disk**.
+- **In-memory log window**: the plugin's logger is teed into a bounded in-memory
+  ring buffer that keeps only the latest `logging.bufferSize` entries (default
+  `200`, integer `1..5000`). Logs are **never written to disk automatically** —
+  they are lost on plugin restart, and overwritten entries are unrecoverable.
+- **Logging settings**: `logging.bufferSize` and `logging.debug` (default
+  `false`) are persisted to `config.json` and take effect immediately from the
+  Logs tab (resizing trims the buffer right away; disabling debug stops
+  debug-level capture and forwarding). Existing configs gain the defaults
+  automatically with no migration.
+- **Manual log export**: **Write to disk** writes the current window to a new
+  file `<home>/logs/context-rag-YYYYMMDD-HHmmss-SSS.log` (host-local time,
+  `-1`/`-2` suffix on collision, plain text with an export header, mode `0600`)
+  and shows the path on the page. Each click produces a new file; exports do
+  not participate in log rolling or cleanup. Log entries never contain message
+  or memory bodies, query text, or API keys.

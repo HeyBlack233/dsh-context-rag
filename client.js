@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
     // Tab ids are shared by the tab buttons and their panels for aria links.
     const tabDomId = (id) => "dscr-tab-" + id;
     const panelDomId = (id) => "dscr-panel-" + id;
-    const TAB_IDS = ["dashboard", "configuration"];
+    const TAB_IDS = ["dashboard", "configuration", "logs"];
     const TAB_STORAGE_KEY = "dsh-context-rag:tab";
 
     function storedTab() {
@@ -129,6 +129,24 @@ window.__ModuleLoader__.load({
       const [confirmClear, setConfirmClear] = React.useState(false);
       const [activeTab, setActiveTab] = React.useState(storedTab);
       const [advancedOpen, setAdvancedOpen] = React.useState(false);
+      // Logs tab state. logLimitText holds the raw N input value so typing is
+      // never clobbered by the 2 s poll; the applied limit lives in logLimit.
+      const [logEntries, setLogEntries] = React.useState([]);
+      const [logLimit, setLogLimit] = React.useState(200);
+      const [logDebug, setLogDebug] = React.useState(false);
+      const [logLimitText, setLogLimitText] = React.useState("200");
+      const [logBusy, setLogBusy] = React.useState("");
+      const [logError, setLogError] = React.useState("");
+      const logListRef = React.useRef(null);
+      // True once the user edits the N input, so polling does not overwrite a
+      // value that is still being typed or is about to be applied.
+      const logLimitEditedRef = React.useRef(false);
+      // Follow the newest entry while the reader is at the bottom; scrolling up
+      // pauses this until the reader returns to the bottom.
+      const logFollowRef = React.useRef(true);
+      // Bumped around logs.configure so a poll that started before (or during)
+      // the request cannot overwrite the freshly applied settings.
+      const logEpochRef = React.useRef(0);
 
       const parsedConfig = () => {
         try { return JSON.parse(configText) || {}; } catch { return null; }
@@ -151,6 +169,72 @@ window.__ModuleLoader__.load({
         return path.split(".").reduce((v, k) => (v && typeof v === "object" ? v[k] : undefined), base) ?? fallback;
       };
 
+      // The buffer is append-only (oldest entries are trimmed from the head),
+      // so equal length plus equal head/tail identify the same window. This
+      // lets a 2 s poll bail out without touching React state when nothing
+      // changed, even with the maximum N.
+      const sameLogWindow = (prev, next) => {
+        if (prev === next) return true;
+        if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
+        if (prev.length === 0) return true;
+        const prevFirst = prev[0];
+        const prevLast = prev[prev.length - 1];
+        const nextFirst = next[0];
+        const nextLast = next[next.length - 1];
+        return prevFirst.time === nextFirst.time
+          && prevFirst.message === nextFirst.message
+          && prevLast.time === nextLast.time
+          && prevLast.level === nextLast.level
+          && prevLast.message === nextLast.message;
+      };
+
+      // Apply a logs.get / logs.configure response to the logs state. A
+      // same-window response keeps the previous entries array so React does
+      // not re-render thousands of rows on every 2 s poll.
+      const setLogs = (value) => {
+        const nextEntries = Array.isArray(value && value.entries) ? value.entries : [];
+        setLogEntries((prev) => (sameLogWindow(prev, nextEntries) ? prev : nextEntries));
+        if (value && typeof value === "object") {
+          if (typeof value.limit === "number") {
+            setLogLimit(value.limit);
+            // Follow the server-side limit until the user starts editing; after
+            // that the input is theirs until Apply succeeds.
+            if (!logLimitEditedRef.current) setLogLimitText(String(value.limit));
+          }
+          if (typeof value.debug === "boolean") setLogDebug(value.debug);
+        }
+      };
+
+      // Shared success path for polls and manual refresh.
+      const applyLogsValue = (value) => {
+        setLogs(value);
+        setLogError("");
+      };
+
+      // After logs.configure succeeds, mirror the new logging fields into both
+      // configuration snapshots (configText and savedText) so a later Save in
+      // the Configuration tab cannot roll bufferSize/debug back. Snapshots that
+      // do not parse are kept verbatim; the user's other unsaved edits survive.
+      // Only the snapshots are patched here; the server config is untouched.
+      const patchConfigSnapshot = ({ bufferSize, debug } = {}) => {
+        const patch = {};
+        if (bufferSize !== undefined) patch.bufferSize = bufferSize;
+        if (debug !== undefined) patch.debug = debug;
+        if (Object.keys(patch).length === 0) return;
+        const applyTo = (text) => {
+          try {
+            const obj = JSON.parse(text);
+            if (!obj || typeof obj !== "object" || Array.isArray(obj)) return text;
+            obj.logging = { ...(obj.logging && typeof obj.logging === "object" ? obj.logging : {}), ...patch };
+            return JSON.stringify(obj, null, 2);
+          } catch {
+            return text;
+          }
+        };
+        setConfigText((prev) => applyTo(prev));
+        setSavedText((prev) => applyTo(prev));
+      };
+
       const reload = React.useCallback(async () => {
         setBusy("status");
         try {
@@ -169,6 +253,41 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         reload();
       }, [reload]);
+
+      // Poll the ring buffer only while the Logs tab is active: immediately on
+      // first entry, then every 2000 ms. Leaving the tab or unmounting clears
+      // the interval and stops late setState. Poll failures render as a local
+      // line inside the Logs card, not a page-level banner every 2 s.
+      React.useEffect(() => {
+        if (activeTab !== "logs") return;
+        let alive = true;
+        const poll = async () => {
+          const epoch = logEpochRef.current;
+          let value;
+          try {
+            value = await call("logs.get");
+          } catch (err) {
+            if (alive && epoch === logEpochRef.current) setLogError(err.message);
+            return;
+          }
+          // Discard a response that predates a just-applied configure.
+          if (alive && epoch === logEpochRef.current) applyLogsValue(value);
+        };
+        poll();
+        const timer = window.setInterval(poll, 2000);
+        return () => {
+          alive = false;
+          window.clearInterval(timer);
+        };
+      }, [activeTab]);
+
+      // Follow the newest entries while reading at the bottom; scrolling up
+      // pauses auto-scroll so the poll never yanks the list away.
+      React.useEffect(() => {
+        const node = logListRef.current;
+        if (!node || !logFollowRef.current) return;
+        node.scrollTop = node.scrollHeight;
+      }, [logEntries]);
 
       // Unsaved edits are detected against the last loaded/saved snapshot, so
       // switching tabs never loses them (the text stays in the parent state).
@@ -246,6 +365,78 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setBanner({ kind: "error", text: err.message });
           setBusy("");
+        }
+      };
+
+      const applyLimit = async () => {
+        const n = Number(logLimitText);
+        if (!Number.isInteger(n) || n < 1 || n > 5000) {
+          setBanner({ kind: "error", text: t("logLimitInvalid") });
+          return;
+        }
+        setLogBusy("configure");
+        logEpochRef.current += 1;
+        try {
+          const value = await call("logs.configure", { bufferSize: n });
+          logLimitEditedRef.current = false;
+          setLogs(value);
+          setLogLimitText(String(value.limit));
+          patchConfigSnapshot({ bufferSize: value.limit });
+          setBanner({ kind: "success", text: t("logConfigured") });
+        } catch (err) {
+          setBanner({ kind: "error", text: err.message });
+        } finally {
+          // Invalidate polls that raced with this request, then allow new ones.
+          logEpochRef.current += 1;
+          setLogBusy("");
+        }
+      };
+
+      const toggleDebug = async (checked) => {
+        // Optimistically reflect the click; a failed save rolls it back.
+        const previous = logDebug;
+        setLogDebug(checked);
+        setLogBusy("configure");
+        logEpochRef.current += 1;
+        try {
+          const value = await call("logs.configure", { debug: checked });
+          setLogs(value);
+          patchConfigSnapshot({ debug: value.debug });
+          setBanner({ kind: "success", text: t("logConfigured") });
+        } catch (err) {
+          setLogDebug(previous);
+          setBanner({ kind: "error", text: err.message });
+        } finally {
+          logEpochRef.current += 1;
+          setLogBusy("");
+        }
+      };
+
+      // Manual refresh reuses the same fetch-and-apply logic as the poll.
+      const refreshLogs = async () => {
+        setLogBusy("refresh");
+        const epoch = logEpochRef.current;
+        try {
+          const value = await call("logs.get");
+          if (epoch === logEpochRef.current) applyLogsValue(value);
+        } catch (err) {
+          if (epoch === logEpochRef.current) setLogError(err.message);
+        } finally {
+          setLogBusy("");
+        }
+      };
+
+      const exportLogs = async () => {
+        setLogBusy("export");
+        try {
+          const value = await call("logs.export");
+          const count = value && Number.isInteger(value.count) ? value.count : 0;
+          const path = value && value.path ? value.path : "";
+          setBanner({ kind: "success", text: t("logExportOk") + " " + count + " " + t("logCount") + " → " + path });
+        } catch (err) {
+          setBanner({ kind: "error", text: err.message });
+        } finally {
+          setLogBusy("");
         }
       };
 
@@ -377,8 +568,8 @@ window.__ModuleLoader__.load({
         ]),
       ];
 
-      // The strip stays visible on both tabs, so the index counts remain at
-      // hand while tuning retrieval settings.
+      // The strip stays visible on every tab, so the index counts remain at
+      // hand while tuning retrieval settings or reading logs.
       const stripStat = (label, value) =>
         el("div", { className: "dscr-strip-stat" },
           el("span", { className: "dscr-strip-value" }, value),
@@ -434,6 +625,59 @@ window.__ModuleLoader__.load({
 
       const configurationCards = [...settingsCards, advancedCard, actionsCard];
 
+      const logRow = (entry, i) => {
+        const level = entry && entry.level;
+        const levelClass = "dscr-log-level" + (level === "error" ? " dscr-log-level-error" : level === "warn" ? " dscr-log-level-warn" : "");
+        return el("div", { key: i, className: "dscr-log-row" },
+          el("span", { className: "dscr-log-time" }, new Date(entry.time).toLocaleString()),
+          el("span", { className: levelClass }, level || ""),
+          el("span", { className: "dscr-log-message" }, entry.message || ""));
+      };
+
+      const logBusyActive = logBusy !== "";
+      const logLimitPending = logLimitText.trim() !== "" && Number(logLimitText) !== logLimit;
+      const logsCards = [
+        el("div", { className: "dscr-card" },
+          el("h2", { className: "dscr-title" }, t("logsTitle")),
+          el("p", { className: "dscr-help" }, t("logsHelp")),
+          el("div", { className: "dscr-log-controls" },
+            el("div", { className: "dscr-log-control" },
+              el("label", { htmlFor: "dscr-log-limit" }, t("logLimit")),
+              el("input", {
+                id: "dscr-log-limit",
+                className: "dscr-input",
+                type: "number",
+                min: 1, max: 5000, step: 1,
+                value: logLimitText,
+                disabled: logBusyActive,
+                onChange: (e) => { logLimitEditedRef.current = true; setLogLimitText(e.target.value); },
+                onKeyDown: (e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyLimit();
+                  }
+                },
+              }),
+              el("button", { className: "dscr-btn", type: "button", disabled: logBusyActive, onClick: applyLimit }, t("logApply"))),
+            el("div", { className: "dscr-log-control" },
+              el("input", { id: "dscr-log-debug", type: "checkbox", checked: !!logDebug, disabled: logBusyActive, onChange: (e) => toggleDebug(e.target.checked) }),
+              el("label", { htmlFor: "dscr-log-debug" }, t("logDebug"))),
+            el("div", { className: "dscr-log-control" },
+              el("button", { className: "dscr-btn", type: "button", disabled: logBusyActive, onClick: refreshLogs }, t("logRefresh")),
+              el("button", { className: "dscr-btn", type: "button", disabled: logBusyActive, onClick: exportLogs }, t("logExport")))),
+          el("p", { className: "dscr-log-count" },
+            logEntries.length + " / " + logLimit + " " + t("logCount"),
+            logLimitPending ? el("span", { className: "dscr-log-pending" }, " · " + t("logLimitPending")) : null),
+          logError ? el("p", { className: "dscr-log-error", role: "status" }, t("logPollError") + ": " + logError) : null,
+          logEntries.length === 0
+            ? el("p", { className: "dscr-help" }, t("logEmpty"))
+            : el("div", { className: "dscr-log-list", role: "log", "aria-live": "off", "aria-label": t("logsLabel"), ref: logListRef, tabIndex: 0, onScroll: (e) => {
+                const node = e.currentTarget;
+                logFollowRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
+              } },
+                ...logEntries.map(logRow))),
+      ];
+
       const panel = (id, children, selected) => el("div", {
         id: panelDomId(id),
         className: "dscr-panel",
@@ -446,6 +690,7 @@ window.__ModuleLoader__.load({
       const tabs = [
         { id: "dashboard", labelKey: "dashboardTab", content: dashboardCards },
         { id: "configuration", labelKey: "configurationTab", dirty, content: configurationCards },
+        { id: "logs", labelKey: "logsTab", content: logsCards },
       ];
       const currentTab = tabs.find((tab) => tab.id === activeTab) || tabs[0];
 
@@ -493,6 +738,15 @@ window.__ModuleLoader__.load({
         rebuild: "Rebuild index", clear: "Clear index", confirmClear: "Click again to confirm",
         saved: "Configuration saved.", cleared: "Index cleared.", rebuilt: "Index rebuilt.",
         testOk: "Connection OK", jsonInvalid: "Invalid JSON", busy: "Busy", ok: "OK", error: "Error",
+        logsTab: "Logs", logsTitle: "Plugin logs",
+        logsHelp: "Logs live in memory only: the ring buffer keeps the latest N entries, refreshes every 2 seconds while this tab is active, and nothing is written to disk by default. Click \"Write to disk\" to export the current window to <home>/logs/.",
+        logLimit: "Keep latest", logApply: "Apply", logDebug: "Capture debug logs",
+        logRefresh: "Refresh logs", logExport: "Write to disk",
+        logExportOk: "Logs written:", logConfigured: "Log settings applied.",
+        logLimitInvalid: "N must be an integer between 1 and 5000.",
+        logLimitPending: "not applied yet",
+        logEmpty: "No log entries in the current window. Enable debug capture to collect more detail.",
+        logCount: "entries", logPollError: "Auto refresh failed", logsLabel: "Log entries",
       },
       zh: {
         title: "Context RAG",
@@ -525,6 +779,15 @@ window.__ModuleLoader__.load({
         rebuild: "重建索引", clear: "清空索引", confirmClear: "再次点击确认",
         saved: "配置已保存。", cleared: "索引已清空。", rebuilt: "索引已重建。",
         testOk: "连接成功", jsonInvalid: "JSON 无效", busy: "处理中", ok: "成功", error: "错误",
+        logsTab: "日志", logsTitle: "插件日志",
+        logsHelp: "日志只保存在内存：环形缓冲保留最新 N 条，本标签页激活时每 2 秒自动刷新，默认不写盘。点击“写入磁盘”才会把当前窗口导出到 <home>/logs/。",
+        logLimit: "保留最新", logApply: "应用", logDebug: "采集调试日志",
+        logRefresh: "刷新日志", logExport: "写入磁盘",
+        logExportOk: "日志已写入：", logConfigured: "日志设置已应用。",
+        logLimitInvalid: "N 必须是 1 到 5000 的整数。",
+        logLimitPending: "尚未应用",
+        logEmpty: "当前窗口内没有日志。开启调试日志可采集更多细节。",
+        logCount: "条目", logPollError: "自动刷新失败", logsLabel: "日志条目",
       },
     };
 
@@ -543,7 +806,7 @@ window.__ModuleLoader__.load({
             ".dscr-textarea { width: 100%; min-height: 220px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; padding: 8px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); resize: vertical; }",
             ".dscr-help { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 8px 0 0; } .dscr-btns { display: flex; flex-wrap: wrap; gap: 8px; }",
             ".dscr-btn { padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); } .dscr-btn:disabled { opacity: 0.5; cursor: default; }",
-            ".dscr-busy { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin-top: 8px; } .dscr-banner { margin-top: 4px; padding: 8px 12px; font-size: 13px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary, inherit); } .dscr-banner-error strong { color: var(--dsw-alias-state-error-primary, inherit); }",
+            ".dscr-busy { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin-top: 8px; } .dscr-banner { margin-top: 4px; padding: 8px 12px; font-size: 13px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary, inherit); overflow-wrap: anywhere; } .dscr-banner-error strong { color: var(--dsw-alias-state-error-primary, inherit); }",
             ".dscr-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; } .dscr-form-row { display: flex; flex-direction: column; gap: 4px; } .dscr-form-row label { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-input { padding: 6px 8px; font-size: 13px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); } .dscr-check { display: flex; align-items: center; gap: 6px; }",
             ".dscr-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 10px 14px; color: var(--dsw-alias-label-primary, inherit); } .dscr-strip-stats { display: flex; flex-wrap: wrap; gap: 18px; } .dscr-strip-stat { display: flex; flex-direction: column; gap: 2px; } .dscr-strip-value { font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-strip-label { font-size: 11px; color: var(--dsw-alias-label-secondary, inherit); }",
             ".dscr-strip-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; } .dscr-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-pill-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary, inherit)); } .dscr-pill-on .dscr-pill-dot { background: var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary)); }",
@@ -551,6 +814,7 @@ window.__ModuleLoader__.load({
             ".dscr-panel { display: flex; flex-direction: column; gap: 12px; } .dscr-panel[hidden] { display: none; } .dscr-panel:focus-visible { outline: 1px solid var(--dsw-alias-border-l2); outline-offset: 2px; }",
             ".dscr-btn-small { padding: 4px 10px; font-size: 12px; } .dscr-unsaved { align-self: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }",
             ".dscr-details .dscr-summary { cursor: pointer; margin: 0; } .dscr-details[open] .dscr-summary { margin-bottom: 12px; }",
+            ".dscr-log-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 4px; } .dscr-log-control { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-control .dscr-input { width: 110px; } .dscr-log-count { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 4px 0 8px; } .dscr-log-pending { color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-error { font-size: 12px; color: var(--dsw-alias-state-error-primary, inherit); margin: 4px 0 8px; } .dscr-log-list { max-height: 360px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 8px; } .dscr-log-list:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; } .dscr-log-row { display: flex; gap: 8px; padding: 2px 0; color: var(--dsw-alias-label-primary, inherit); } .dscr-log-time { flex-shrink: 0; white-space: nowrap; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-level { flex-shrink: 0; font-weight: 600; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-level-error { color: var(--dsw-alias-state-error-primary, inherit); } .dscr-log-level-warn { color: var(--dsw-alias-state-warn-primary, inherit); } .dscr-log-message { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }",
           ].join("\n");
           document.head.appendChild(style);
           return () => {

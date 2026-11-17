@@ -38,6 +38,7 @@ test/
 ├── indexer.test.js
 ├── inject.test.js
 ├── integration.test.js
+├── log-buffer.test.js
 ├── manifest.test.js
 ├── memories.test.js
 ├── memory-tools.test.js
@@ -57,7 +58,7 @@ test/
 
 | Suite | Focus |
 | --- | --- |
-| `config` | Config load, validation, persistence, API-key redaction, and the `minMessageLength` bounds. |
+| `config` | Config load, validation, persistence, API-key redaction, the `minMessageLength` bounds, and the logging settings (`logging.bufferSize` bounds and the `logging.debug` boolean). |
 | `paths` | Data-home resolution and every path underneath it. |
 | `text` | Text normalization, `minMessageLength` word/Han counting, and character truncation. |
 | `pairs` | Reading/appending the JSONL pair log and text-hash computation. |
@@ -73,10 +74,11 @@ test/
 | `inject` | Per-user-message dedupe, the short-message gate, and attaching the injected context message. |
 | `memories` | Memory store: Markdown + YAML front matter, `MEMORY.md` index maintenance, `.forgotten` handling, name/content validation, and the startup sync scan. |
 | `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, turn-dedupe recording on write and cleanup on forget, and error mapping. |
-| `api` | The host-facing HTTP API, trust checks, actions, and error mapping. |
-| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, the short-message gate suppressing both capture and injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. |
+| `log-buffer` | The in-memory ring buffer: latest-N window and trimming, logger tee, text serialization, and export (file naming, collision suffix, header, and mode `0600`). |
+| `api` | The host-facing HTTP API, trust checks, actions (including `logs.get`, `logs.configure`, and `logs.export`), and error mapping. |
+| `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, the short-message gate suppressing both capture and injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. Logging is covered end-to-end too: the logger tee feeds the ring buffer, config changes resize it, and an export writes the `logs/` file. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, the DSH compatibility range, and the no-icon contract. |
-| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring and accessibility, action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
+| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring (three tabs) and accessibility, the Logs tab (log list, N input, debug toggle, export button, and active-tab auto-refresh), action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
 
 The `integration` suite is the end-to-end proof; the `api` suite covers the
 HTTP boundary itself.
@@ -146,6 +148,14 @@ live session:
     about the saved topic; the memory should be injected alongside pair
     candidates. Edit a memory file by hand and restart the plugin; the startup
     scan should pick up the change (there is no real-time watcher).
+14. **Check the Logs tab** — on the configuration page, open the **Logs** tab:
+    adjust the N input (for example to `50`) and click **Apply**, enable the
+    **debug** checkbox, then trigger a warning or error (for example, a failing
+    embedding request or a `memory_forget` for a name that does not exist) and
+    click **Write to disk**. Confirm the page shows the exported file path, a
+    new `context-rag-*.log` file appears under `$DSH_HOME/context-rag/logs/`
+    (host-local timestamp; `-1`/`-2` suffix on collision), and that the log
+    list refreshes while the tab stays active and stops after you leave it.
 
 See [operations.md](operations.md) for the data paths and
 [retrieval-and-injection.md](retrieval-and-injection.md) for how injected

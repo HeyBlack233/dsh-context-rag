@@ -39,9 +39,10 @@ and indexer state stay visible while editing settings:
 - indexer running state;
 - a **Refresh** button that re-reads the saved config and runtime status.
 
-Below the strip are two tabs. The selected tab is remembered in
-`localStorage` (`dsh-context-rag:tab`) and survives a page refresh. Switching
-tabs never discards edits: both tabs render from the same page state.
+Below the strip are three tabs — **Dashboard**, **Configuration**, and **Logs**.
+The selected tab is remembered in `localStorage` (`dsh-context-rag:tab`) and
+survives a page refresh. Switching tabs never discards edits: the Dashboard and
+Configuration tabs render from the same page state.
 
 ### Dashboard
 
@@ -85,6 +86,33 @@ The Configuration tab holds all editing surfaces:
 
 The field names and defaults match [configuration.md](configuration.md).
 
+### Logs
+
+The Logs tab is the diagnostic view of the plugin's own logger. It shows the
+in-memory log window — entries oldest to newest in a scrollable list, each with
+a timestamp (rendered in the browser's local time), a level (`debug` / `info` /
+`warn` / `error`), and a message — plus the controls that shape it:
+
+- **N input + Apply** — sets `logging.bufferSize` (integer `1..5000`, default
+  `200`). Applying takes effect immediately (the buffer is trimmed to the new
+  window) and persists the value to `config.json`; no separate **Save** step is
+  needed.
+- **Enable debug** checkbox — toggles `logging.debug` (default `false`).
+  Enabling it starts collecting and forwarding debug-level entries; disabling
+  it stops that immediately. The value is saved to `config.json`.
+- **Refresh** — re-reads the current window from the host.
+- **Write to disk** — runs the `logs.export` action, which writes the current
+  window to a new file under `<home>/logs/` and shows the resulting file path
+  after a successful export (see [operations.md](operations.md)).
+
+The tab **auto-refreshes every 2 seconds while it is active** and stops when
+you leave it. Logs are memory-only by default: nothing is written to disk
+automatically, and the window is lost on plugin restart.
+
+Log entries never contain user or assistant message bodies, memory content,
+query text, or API keys — only ids, counts, timings, scope/name, and error
+messages (see [security-and-privacy.md](security-and-privacy.md)).
+
 ## Actions
 
 The page invokes the host API with one of these `action` values:
@@ -97,11 +125,14 @@ The page invokes the host API with one of these `action` values:
 | `connection.testRerank` | Issue a test request to the configured rerank endpoint. | Configuration |
 | `index.rebuild` | Rebuild the SQLite index from the JSONL pair log. | Dashboard |
 | `index.clear` | Clear the index rows (outbox and index) but keep the JSONL log. | Dashboard |
+| `logs.get` | Read the current in-memory log window (`{limit, debug, entries}`). | Logs |
+| `logs.configure` | Persist and apply logging settings (`{bufferSize?, debug?}`). | Logs |
+| `logs.export` | Write the current window to a new file under `logs/`; returns `{path, count}`. | Logs |
 
 `index.rebuild` and `index.clear` run through the same API request and return
 updated status; the page reloads the status after they complete (see
 [operations.md](operations.md)). A busy indicator and the result banner are
-rendered at page level, below both tabs, so feedback stays visible after
+rendered at page level, below the tabs, so feedback stays visible after
 switching tabs.
 
 ## API keys: password inputs
@@ -154,8 +185,9 @@ All user-visible strings on the page go through translation keys. English
 (`locale/en.json`) and Simplified Chinese (`locale/zh.json`) resources are
 provided, and the page follows the active DSH locale. Labels are not hard-coded
 in the client. The plugin title and description are `Context RAG` / `上下文 RAG`
-respectively. Tab labels, the status strip, index-maintenance text, and the
-unsaved marker all have their own keys in both locales.
+respectively. Tab labels, the status strip, index-maintenance text, the Logs
+copy (log list, N input, debug toggle, export button, and result messages), and
+the unsaved marker all have their own keys in both locales.
 
 ## Theme tokens
 

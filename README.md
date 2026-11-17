@@ -51,8 +51,10 @@ Trajectory so you can see exactly what was retrieved and used.
   SQLite.
 - **Configure panel** on the plugin's page in the DSH Web GUI (above the
   **Components** section), split into **Dashboard** (status and index
-  maintenance) and **Configuration** (settings, advanced JSON, and save/test
-  actions) tabs, with **English and Simplified Chinese** UI.
+  maintenance), **Configuration** (settings, advanced JSON, and save/test
+  actions), and **Logs** (in-memory log window with buffer-size and debug
+  controls, and manual export) tabs, with **English and Simplified Chinese**
+  UI.
 
 ## Install
 
@@ -99,6 +101,11 @@ counting memory writes; `0` disables, `-1` = once per session ever),
 `dedupeStateRetentionDays = 90` and `dedupeStateMaxSessions = 500`
 (recall-state retention; `0` disables the corresponding limit).
 
+Logs stay in an in-memory window of the latest `logging.bufferSize` entries
+(default `200`, up to `5000`) and are never written to disk automatically; use
+the **Logs** tab to resize the window, enable debug logging, or export the
+current window to `logs/`.
+
 ## Data layout
 
 Everything lives under `$DSH_HOME/context-rag`:
@@ -111,6 +118,8 @@ Everything lives under `$DSH_HOME/context-rag`:
   the memory files).
 - `recall-state.json` — turn-dedupe history (ids/turns/timestamps/counts only;
   safe to delete — dedupe history resets).
+- `logs/` — manually exported log files (created only when you use **Write to
+  disk** on the Logs tab; logs otherwise stay in memory).
 
 ## How it works
 

@@ -98,6 +98,10 @@ describe("DEFAULT_CONFIG", () => {
         maxAttempts: 8,
         pollIntervalMs: 1000,
       },
+      logging: {
+        bufferSize: 200,
+        debug: false,
+      },
     });
   });
 
@@ -107,6 +111,7 @@ describe("DEFAULT_CONFIG", () => {
     assert.ok(Object.isFrozen(DEFAULT_CONFIG.rerank));
     assert.ok(Object.isFrozen(DEFAULT_CONFIG.retrieval));
     assert.ok(Object.isFrozen(DEFAULT_CONFIG.indexing));
+    assert.ok(Object.isFrozen(DEFAULT_CONFIG.logging));
     // Mutating throws in strict mode or silently fails; the value must not change.
     assert.throws(() => {
       "use strict";
@@ -320,6 +325,41 @@ describe("normalizeConfig", () => {
     });
   });
 
+  describe("logging section", () => {
+    test("bufferSize must be an integer between 1 and 5000", () => {
+      assertInvalid({ logging: { bufferSize: 0 } }, "logging.bufferSize");
+      assertInvalid({ logging: { bufferSize: -1 } }, "logging.bufferSize");
+      assertInvalid({ logging: { bufferSize: 5001 } }, "logging.bufferSize");
+      assertInvalid({ logging: { bufferSize: 2.5 } }, "logging.bufferSize");
+      assertInvalid({ logging: { bufferSize: "200" } }, "logging.bufferSize");
+      assertInvalid({ logging: { bufferSize: NaN } }, "logging.bufferSize");
+    });
+
+    test("debug must be a boolean", () => {
+      assertInvalid({ logging: { debug: "yes" } }, "logging.debug");
+      assertInvalid({ logging: { debug: 1 } }, "logging.debug");
+      assertInvalid({ logging: { debug: 0 } }, "logging.debug");
+      assertInvalid({ logging: { debug: null } }, "logging.debug");
+    });
+
+    test("accepts boundary values 1 and 5000", () => {
+      const min = normalizeConfig({ logging: { bufferSize: 1, debug: true } });
+      assert.strictEqual(min.logging.bufferSize, 1);
+      assert.strictEqual(min.logging.debug, true);
+      const max = normalizeConfig({ logging: { bufferSize: 5000, debug: false } });
+      assert.strictEqual(max.logging.bufferSize, 5000);
+      assert.strictEqual(max.logging.debug, false);
+    });
+
+    test("omitted logging fields fall back to defaults", () => {
+      const cfg = normalizeConfig({ enabled: false });
+      assert.deepStrictEqual(cfg.logging, {
+        bufferSize: DEFAULT_CONFIG.logging.bufferSize,
+        debug: DEFAULT_CONFIG.logging.debug,
+      });
+    });
+  });
+
   test("new retrieval dedupe fields accept valid values (-1/0/positive)", () => {
     const cfg = normalizeConfig({
       retrieval: {
@@ -458,6 +498,24 @@ describe("createConfigStore", () => {
     const onDisk = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
     assert.strictEqual(onDisk.embedding.model, "m1");
     assert.strictEqual(onDisk.embedding.timeoutMs, 777);
+  });
+
+  test("save() roundtrip persists logging fields and re-reads them", async (t) => {
+    const home = await tempHome(t);
+    const store = makeStore(home);
+    store.save({ logging: { bufferSize: 42, debug: true } });
+    assert.strictEqual(store.get().logging.bufferSize, 42);
+    assert.strictEqual(store.get().logging.debug, true);
+
+    const onDisk = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert.strictEqual(onDisk.logging.bufferSize, 42);
+    assert.strictEqual(onDisk.logging.debug, true);
+
+    // A fresh store re-reads the persisted logging fields.
+    const fresh = makeStore(home);
+    fresh.load();
+    assert.strictEqual(fresh.get().logging.bufferSize, 42);
+    assert.strictEqual(fresh.get().logging.debug, true);
   });
 
   test("get() returns a deep clone detached from the store", async (t) => {

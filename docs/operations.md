@@ -21,7 +21,8 @@ $DSH_HOME/context-rag/
 │   └── workspaces/
 │       └── <workspace-slug>/   # per-workspace memories (Markdown + MEMORY.md)
 ├── index.sqlite         # rebuildable index (pair and memory vectors)
-└── recall-state.json    # turn-dedupe bookkeeping (disposable)
+├── recall-state.json    # turn-dedupe bookkeeping (disposable)
+└── logs/                # manual log exports (only after Write to disk)
 ```
 
 ## Backup
@@ -102,10 +103,38 @@ drains it in batches and retries failures with backoff:
 - After `maxAttempts`, a pair is **dropped from the outbox** (it is not
   embedded).
 
-To inspect errors, look at the harness logs: embedding/rerank failures log a
+To inspect errors, open the **Logs** tab on the configuration page first (or
+export the current window to a file — see
+[Logs and diagnostics](#logs-and-diagnostics)): embedding/rerank failures log a
 warning with the pair and the underlying error. A pair dropped from the outbox
 remains in the JSONL log, so it can be re-queued later by a reconcile or rebuild
 if desired.
+
+## Logs and diagnostics
+
+The plugin's own logger (wrapping `ctx.logger`) is teed into an **in-memory
+ring buffer** that keeps only the latest `logging.bufferSize` entries (default
+`200`, integer `1..5000`). Each entry carries a UTC ISO timestamp, a level
+(`debug` / `info` / `warn` / `error`), and a message. Debug-level entries are
+collected and forwarded only while `logging.debug` is enabled.
+
+- **Memory-only by default**: nothing is written to disk automatically. The
+  window is lost on plugin restart, and entries overwritten by newer ones are
+  unrecoverable.
+- **Viewing**: the **Logs** tab on the configuration page shows the window
+  (oldest to newest, scrollable) and auto-refreshes every 2 seconds while the
+  tab is active (see [configuration-page.md](configuration-page.md)).
+- **Exporting**: the **Write to disk** button runs the `logs.export` action and
+  writes the **current window** to a new file,
+  `<home>/logs/context-rag-YYYYMMDD-HHmmss-SSS.log`, using the host's local
+  time; on a name collision the file gets a `-1`/`-2` suffix. The file is plain
+  text with a header recording the export time, the configured limit, and the
+  number of entries written, and is created with mode `0600`. Each click
+  produces a new file; nothing is exported automatically.
+- **No growth or rolling**: exported files are not part of any log rotation and
+  are never cleaned up or overwritten by the plugin.
+- **Deleting is safe**: files under `logs/` are disposable — removing them only
+  deletes exported diagnostics, never plugin data.
 
 ## Disk usage
 
@@ -118,6 +147,8 @@ Disk usage comes almost entirely from:
   only) and bounded by retention: sessions older than
   `dedupeStateRetentionDays` and sessions beyond `dedupeStateMaxSessions` are
   pruned on load and after every write.
+- Exported log files (`logs/`) — **only when you export**: the in-memory log
+  window itself never touches disk, and each export writes exactly one new file.
 
 The index is bounded and rebuildable; the JSONL is the durable and growing
 record. If disk is a concern, prune the JSONL (see safe deletion below) and then
@@ -140,6 +171,8 @@ rebuild/clear the index.
   lost (pairs and memories become eligible again). It is recreated as needed.
 - **`config.json`**: removing it resets configuration (including any stored API
   keys).
+- **`logs/`**: exported log files only; deleting them is safe and does not
+  affect the pair log, memories, or the index.
 
 ## Common failure modes
 
@@ -175,6 +208,10 @@ pairs in the outbox and retries within `maxAttempts`.
   skip capture and passive recall by default; set
   `retrieval.minMessageLength = 0` to disable that gate, and set
   `retrieval.allowSameSession = true` to restore same-session recall.
+- **Logging defaults are filled in automatically**: existing configs gain
+  `logging.bufferSize = 200` and `logging.debug = false` with no migration.
+  In-memory logs are not persisted, so the window simply starts empty after an
+  upgrade; no `logs/` directory is created until you export.
 - After upgrading, restart/activate the plugin so the worker and hooks are
   re-registered; startup reconciliation ensures the index is current.
 - **DSH release compatibility**: the bundle declares

@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { apply } from "../index.js";
 import { createConfigStore } from "../lib/config.js";
@@ -314,6 +315,93 @@ test("apply registers listeners and the config API, then tears down cleanly", as
 
   // Running the recorded effects (indexer stop, db close, api disposer) must
   // not throw.
+  for (const disposer of ctx.disposers) {
+    const result = disposer();
+    if (result && typeof result.then === "function") {
+      await result;
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Test 1a: apply wires the in-memory log buffer and the logs API actions.
+// ---------------------------------------------------------------------------
+
+test("logging: apply wires the buffer; logs.configure/get/export round-trip end-to-end", async (t) => {
+  const home = await makeTempDir("dsh-rag-apply-");
+  t.after(() => cleanupTempDir(home));
+
+  const ctx = makeCtx();
+  const messages = [];
+  ctx.logger = {
+    debug() {},
+    info(m) {
+      messages.push(String(m));
+    },
+    warn() {},
+    error() {},
+  };
+  assert.doesNotThrow(() => apply(ctx, { home }));
+
+  const route = ctx.routes.find((r) => r.path === "/plugins/dsh-context-rag/api");
+  assert.ok(route, "the /plugins/dsh-context-rag/api route must be registered");
+
+  // Drive one POST through the registered route handler with a fake req/res.
+  const postJson = async (body) => {
+    const req = new EventEmitter();
+    req.method = "POST";
+    req.headers = { "content-type": "application/json" };
+    const res = { statusCode: 0, body: "" };
+    res.writeHead = (status) => {
+      res.statusCode = status;
+    };
+    res.end = (text) => {
+      res.body = String(text);
+    };
+    const done = route.handler(req, res);
+    req.emit("data", body);
+    req.emit("end");
+    await done;
+    assert.equal(res.statusCode, 200, `request ${body} must succeed`);
+    return JSON.parse(res.body);
+  };
+
+  // Configure: shrink the window to 2 entries and enable debug capture.
+  const configured = await postJson(JSON.stringify({ action: "logs.configure", payload: { bufferSize: 2, debug: true } }));
+  assert.equal(configured.ok, true);
+  assert.equal(configured.value.limit, 2);
+  assert.equal(configured.value.debug, true);
+
+  // The settings are persisted to config.json.
+  const configFile = JSON.parse(await readFile(path.join(home, "config.json"), "utf8"));
+  assert.equal(configFile.logging.bufferSize, 2);
+  assert.equal(configFile.logging.debug, true);
+
+  // Snapshot: the window is capped at 2 and still contains the activation
+  // baseline written at the very end of apply (the newest entry when the
+  // configure request runs, so it survives the trim).
+  const snapshot = await postJson(JSON.stringify({ action: "logs.get" }));
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.value.limit, 2);
+  assert.ok(snapshot.value.entries.length <= 2, `entries (${snapshot.value.entries.length}) must fit the new limit`);
+  const activation = snapshot.value.entries.find((entry) => entry.message.includes("activated"));
+  assert.ok(activation, "the activation info line must be buffered");
+  assert.equal(activation.level, "info");
+  assert.ok(activation.message.startsWith("[context-rag] activated"), "the activation message must carry the [context-rag] prefix");
+
+  // Export: a file under <home>/logs containing the activation message.
+  const exported = await postJson(JSON.stringify({ action: "logs.export" }));
+  assert.equal(exported.ok, true);
+  assert.ok(exported.value.count > 0);
+  assert.ok(exported.value.path.startsWith(path.join(home, "logs")), "the export must live under <home>/logs");
+  const exportedText = await readFile(exported.value.path, "utf8");
+  assert.ok(exportedText.includes("activated"), "the exported file must contain the activation message");
+
+  // The tee logger forwarded the activation line to the host logger as well.
+  assert.ok(messages.some((m) => m.includes("activated")), "the tee logger must forward to the host logger");
+
+  // Teardown: run every recorded disposer (indexer stop, db close, api and
+  // logging-config disposers); must not throw.
   for (const disposer of ctx.disposers) {
     const result = disposer();
     if (result && typeof result.then === "function") {

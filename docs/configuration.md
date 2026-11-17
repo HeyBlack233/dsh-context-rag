@@ -105,11 +105,33 @@ recalled from `global` plus the current workspace, regardless of
 memory `content` length (see
 [storage-and-data-model.md](storage-and-data-model.md)).
 
+## Logging
+
+The plugin's own logger (wrapping `ctx.logger`) is teed into an in-memory ring
+buffer that keeps only the latest `bufferSize` entries. Logs are **never
+written to disk automatically** — they are lost on plugin restart (see
+[operations.md](operations.md)).
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `bufferSize` | `200` | How many log entries the in-memory ring buffer keeps (latest N). Integer from `1` to `5000`. |
+| `debug` | `false` | Whether debug-level log entries are collected and forwarded. When off, debug logs are neither captured nor forwarded. |
+
+Both fields are persisted to `config.json` and take effect immediately from the
+**Logs** tab on the configuration page (see
+[configuration-page.md](configuration-page.md)): changing `bufferSize` trims the
+buffer to the new window right away, and toggling `debug` applies at once. No
+separate **Save** step is needed for these values.
+
 ## Home directory
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `home` | `$DSH_HOME/context-rag/` | Root directory for `config.json`, `pairs/`, `memories/`, `index.sqlite`, and `recall-state.json`. |
+| `home` | `$DSH_HOME/context-rag/` | Root directory for `config.json`, `pairs/`, `memories/`, `index.sqlite`, `recall-state.json`, and the optional `logs/` export directory. |
+
+The `logs/` directory appears only after a manual export from the Logs tab;
+logs stay in memory until then (see
+[storage-and-data-model.md](storage-and-data-model.md)).
 
 ## Editing and safety
 

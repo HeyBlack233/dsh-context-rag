@@ -2,8 +2,11 @@
  * dsh-context-rag plugin entry point.
  *
  * Wires the config store, index database, Phase-2 surfaces (capture, indexer,
- * retriever, injector), the memory store + `memory_*` agent tools, and the
- * config HTTP API. `apply` never throws to the Host: every fallible step is
+ * retriever, injector), the memory store + `memory_*` agent tools, the config
+ * HTTP API, and the in-memory log buffer backing the plugin's Logs page.
+ * All logging goes through a tee logger: every entry is captured in the
+ * buffer (subject to `logging.bufferSize`/`logging.debug`) and forwarded to
+ * the host logger. `apply` never throws to the Host: every fallible step is
  * guarded, failures are logged and surfaced via `initError`, and the API is
  * registered even when the database is missing.
  *
@@ -11,7 +14,8 @@
  */
 
 import path from "node:path";
-import { DEFAULT_HOME, createConfigStore } from "./lib/config.js";
+import { DEFAULT_HOME, DEFAULT_CONFIG, createConfigStore } from "./lib/config.js";
+import { createLogBuffer } from "./lib/log-buffer.js";
 import { openIndexDatabase } from "./lib/db.js";
 import { createEmbeddingClient } from "./lib/embeddings.js";
 import { createRerankClient } from "./lib/rerank.js";
@@ -70,7 +74,12 @@ function optionalService(ctx, name) {
  * @param {object} [config] - Plugin config row.
  */
 export function apply(ctx, config = {}) {
-  const logger = createLogger(ctx);
+  // Logging tee: every log line is captured in the in-memory buffer and
+  // forwarded to the host logger. Built before the config store so setup
+  // messages are already buffered once the store is created.
+  const baseLogger = createLogger(ctx);
+  const logs = createLogBuffer({ limit: DEFAULT_CONFIG.logging.bufferSize });
+  const logger = logs.logger(baseLogger);
   let configStore = null;
   let db = null;
   let initError = null;
@@ -94,6 +103,32 @@ export function apply(ctx, config = {}) {
     } catch (err) {
       initError = `config: ${messageOf(err)}`;
       logger.warn(`[context-rag] config load failed: ${initError}`);
+    }
+
+    // Apply the loaded logging settings to the in-memory buffer. The store
+    // falls back to DEFAULT_CONFIG even when `loadError` is set, so this runs
+    // unconditionally; a failure here only leaves the window at its default.
+    try {
+      const current = configStore.get();
+      logs.setLimit(current.logging.bufferSize);
+      logs.setDebug(current.logging.debug);
+    } catch (err) {
+      logger.warn(`[context-rag] failed to apply logging settings: ${messageOf(err)}`);
+    }
+
+    // Keep the buffer in sync with every subsequent config save. The
+    // disposer is managed by `ctx.effect` when available; otherwise the
+    // listener simply stays attached for the plugin's lifetime.
+    const disposeLogging = configStore.onChange((next) => {
+      try {
+        logs.setLimit(next.logging.bufferSize);
+        logs.setDebug(next.logging.debug);
+      } catch (err) {
+        logger.warn(`[context-rag] failed to apply logging config: ${messageOf(err)}`);
+      }
+    });
+    if (typeof ctx.effect === "function") {
+      ctx.effect(() => disposeLogging, "context-rag: logging config");
     }
 
     // Index database; on failure keep the API registered so the config page
@@ -209,6 +244,7 @@ export function apply(ctx, config = {}) {
     if (indexer) {
       try {
         const result = indexer.start(); // Fire-and-forget; never blocks activation.
+        logger.info("[context-rag] indexer worker started");
         if (result && typeof result.then === "function") {
           result.catch((err) => logger.error(`[context-rag] indexer failed: ${messageOf(err)}`));
         }
@@ -222,7 +258,7 @@ export function apply(ctx, config = {}) {
 
   // Config API. Prefer injection so the route only mounts once webServer is
   // available; fall back to a directly present `ctx.webServer`.
-  const deps = { configStore, db, embeddings, reranker, indexer, retriever, injector, recallState, initError };
+  const deps = { configStore, db, embeddings, reranker, indexer, retriever, injector, recallState, initError, logs };
   try {
     if (typeof ctx.inject === "function") {
       ctx.inject(["webServer"], (webCtx) => {
@@ -281,4 +317,8 @@ export function apply(ctx, config = {}) {
   } else {
     logger.warn("[context-rag] memory store unavailable; memory tools not registered");
   }
+
+  // Activation baseline for the Logs page. Written last so it is the newest
+  // buffered entry; never contains secrets or message bodies.
+  logger.info(`[context-rag] activated (home: ${configStore?.home ?? "unavailable"})`);
 }
