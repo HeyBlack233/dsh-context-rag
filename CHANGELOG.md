@@ -144,8 +144,8 @@ Release Date: TBD
   browse stored memories and message pairs per scope (`All` / `Global` /
   workspaces; `Global` is memories-only) in a split list/detail view that
   stacks vertically on narrow screens (≤ 720 px). Lists load lazily on tab
-  entry — no search, no polling — one page of 20 at a time with a **Load
-  more** button. Pair rows preview the user message (200 characters,
+  entry — no polling — one page of 20 at a time with a **Load more** button.
+  Pair rows preview the user message (200 characters,
   whitespace-normalized); the detail shows the full text capped at 200,000
   characters per field with a truncation note, plus metadata, index status,
   and outbox state for pending entries. Everything is read-only except the
@@ -173,3 +173,35 @@ Release Date: TBD
   file is renamed to `<name>.forgotten` (history preserved on disk), the
   `MEMORY.md` index is rebuilt, and the index row and recall-state entries are
   removed.
+- **Browse manual search**: a search form above the Browse toolbar finds
+  matching persistent memories and message pairs by meaning in one scope,
+  regardless of the Memories/Pairs mode toggle. It runs **only on demand**
+  (Search button or Enter; an empty query does nothing) and there is still no
+  polling. Results are mixed and capped at 20, in final-score-descending
+  order, each row showing a kind badge, a score pill (`Score 0.xxx ·
+  cosine|rerank`), and the index-status pill. Scope semantics: `All` searches
+  all pairs and all memories (all workspaces); `Global` searches global
+  memories only (no pairs); `Workspace` searches that workspace's pairs plus
+  that workspace's memories and the global memories. While a search is active
+  the mode toggle is disabled; changing scope, **Refresh**, a successful
+  **Re-index** / **Forget**, or re-entering the tab re-runs it, and **Clear**
+  returns to the current mode's normal list.
+- **Shared search pipeline**: Browse search reuses the same cosine + optional
+  rerank scoring stage as retrieval (`lib/ranking.js`) with the configured
+  `minScore` / `rerankMinScore` / `rerank.enabled` and `scanLimit`, but has no
+  session context — it applies no same-session exclusion, turn dedupe, or
+  `minMessageLength`, and does not use the injection-only
+  `candidateLimit`/`topK`. It only requires embedding to be enabled and
+  configured; only index rows with the current embedding model/dim are scored
+  (missing/pending/model-mismatched entries simply do not appear). Search
+  errors are surfaced in the GUI (unlike recall's fail-open injection); a
+  rerank failure falls back to cosine scores with a note, and the plugin's own
+  log lines and error messages never contain the query text (an upstream
+  endpoint could still echo it in its own error body).
+- **Browse search is read-only**: hits are re-resolved against the
+  authoritative JSONL/Markdown sources and orphaned index rows are dropped
+  (`stats.excludedOrphan`); raw vectors and full `userText`/`assistantText`/
+  memory `content` are never returned by `browse.search` (memory content stays
+  available through the separate `browse.get` detail action). The engine
+  behind it, `lib/search.js` (kept in `deps.search`), is the reusable service
+  for a future agent tool; **no agent tool is registered in this cycle**.

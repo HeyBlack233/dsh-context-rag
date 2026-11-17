@@ -65,7 +65,9 @@ data — memories and message pairs — with per-entry index-consistency status.
 Everything it lists comes from the sources of truth (the JSONL pair files and
 the Markdown memory files); the SQLite index only supplies status. The tab
 loads its data lazily on entry: nothing is fetched or polled while the tab is
-hidden, and there is **no search** and **no polling** while it is active.
+hidden, and there is **no polling** while it is active. A **manual search**
+runs only when you submit it (see the **Manual search** bullet below); it
+never refreshes or polls by itself.
 
 - **Mode switch** — a **Memories** / **Pairs** toggle switches the dataset.
   Memories cover the global store and every workspace; pairs cover the
@@ -75,6 +77,45 @@ hidden, and there is **no search** and **no polling** while it is active.
   per workspace that has stored data. The scope selector shows the workspace
   name and a short slug. Switching scope or mode reloads the list and clears
   the selection.
+- **Manual search** — a search form sits above the toolbar: an input, a
+  **Search** button, and a **Clear** button (shown while a search is active or
+  the input is non-empty). Search runs **only on demand** — clicking Search or
+  pressing Enter; an empty or whitespace-only query does nothing. It searches
+  **both persistent memories and conversation pairs at once**, regardless of
+  the Memories/Pairs mode toggle, and shows a mixed, score-descending result
+  list capped at **20 entries** (`BROWSE_SEARCH_LIMIT`):
+  - **Scope semantics** — `All` searches all pairs and all memories (all
+    workspaces); `Global` searches global memories only (no pairs); `Workspace`
+    searches that workspace's pairs plus that workspace's memories **and** the
+    global memories (global memories participate, matching recall's memory
+    scope).
+  - **Rows** — each result row adds a **kind badge** (Memories/Pairs) and a
+    **score pill** (`Score 0.xxx · cosine|rerank`) to the usual identity and
+    index-status pill; clicking a row opens the normal detail panel, where
+    **Re-index** / **Forget** stay available. A successful Re-index or Forget
+    re-runs the active search so scores and status stay current.
+  - **Interactions** — while a search is active the Memories/Pairs mode toggle
+    is disabled (the result set is mixed); changing the scope re-runs the
+    search; **Refresh** re-runs the active search; enabling **Only mismatched**
+    exits the search (the mismatch list replaces the results); **Clear**
+    returns to the current mode's normal list. Search state lives in-page, so
+    re-entering the tab re-runs an active search.
+  - **Prerequisites** — search needs embedding to be enabled and
+    `embedding.model` + `embedding.baseUrl` configured; it does **not** require
+    `retrieval.injectionEnabled` or the plugin `enabled` switch. Only index
+    rows with the current embedding model/dim can be scored; missing, pending,
+    and model-mismatched entries simply do not appear. Rerank is used only when
+    `rerank.enabled` is on.
+  - **Read-only and orphan-safe** — engine hits are re-resolved against the
+    authoritative JSONL/Markdown sources; orphaned index rows are dropped
+    (`stats.excludedOrphan`), and raw vectors or full user/assistant/memory
+    text are never returned (memory content stays available through the
+    separate `browse.get` detail action).
+  - **Empty and error states** — no matches shows *No matching entries.*;
+    failures are surfaced in the GUI (*Search failed* + message, never the
+    query text), and a rerank failure falls back to cosine scores with a
+    *Rerank unavailable* note. See
+    [retrieval-and-injection.md](retrieval-and-injection.md#manual-search-browse).
 - **Split view** — the list (left) and the detail of the selected entry
   (right) are laid out side by side and **stack vertically at ≤ 720 px**
   (`@media (max-width: 720px)` flips the split to a column; the list is capped
@@ -200,6 +241,7 @@ The page invokes the host API with one of these `action` values:
 | `browse.list` | List source entries of one kind (`memories` / `pairs`) in a scope, paged (`{kind, scope, offset, limit}`; page size 20, `limit` 1..100); items carry a status and a 200-char pair preview. | Browse (list / Load more) |
 | `browse.get` | Read one entry fresh: full text (capped at 200,000 chars per field with a `*Truncated` flag), metadata, index status, and outbox state. `NOT_FOUND` (404) when the source no longer exists. | Browse (detail) |
 | `browse.check` | Full index-consistency audit of one scope: status counts, mismatched entries (capped at 500 with a `truncated` flag), orphans, and malformed JSONL lines. | Browse (Check index) |
+| `browse.search` | Manual search over memories and pairs in one scope: request `{query (trimmed, 1..2000 chars), scope {type: "all"|"global"|"workspace", cwd?}, limit? 1..50}` (default 20); response `{query, scope, limit, results, stats}`. Results are score-descending, mixed, and capped at 20 in the GUI; items carry `kind`, `pairId`, `score`, `cosineScore`, `reranked`, the index-consistency `status`, and the entry identity (memory `name`/`description`/`memoryType`/`cwd`/`createdAt`, or pair `sessionId`/`cwd`/`turn`/`createdAt`/200-char `preview`). Orphans are dropped (`stats.excludedOrphan`); raw vectors and full text are never returned. `EMBEDDING_NOT_CONFIGURED` (409) when embedding is disabled or not configured; `NOT_READY` (503) when the engine is unavailable; plugin-generated error messages never contain the query text (an upstream endpoint could still echo it in its own error body). | Browse (Manual search) |
 | `browse.reindex` | Synchronously re-embed one entry via the configured embedding endpoint; returns the updated model/dim/indexed-at and status. `EMBEDDING_DISABLED` (409) without an embedding model; `EMBEDDING_FAILED` (500, `{queued: true}`) leaves the entry in the outbox; `TEXT_CHANGED` (409) on a concurrent text change (CAS). | Browse (Re-index) |
 | `browse.forget` | Forget a memory: renames `<name>.md` to `<name>.forgotten` (exact name + description match), rebuilds `MEMORY.md`, deletes the index row and recall-state entries. `FORGOTTEN_CONFLICT` (409) if a `.forgotten` file already exists; `NOT_FOUND` (404) on no match. | Browse (Forget, two-click confirm) |
 
@@ -271,10 +313,10 @@ All user-visible strings on the page go through translation keys. English
 provided, and the page follows the active DSH locale. Labels are not hard-coded
 in the client. The plugin title and description are `Context RAG` / `上下文 RAG`
 respectively. Tab labels, the status strip, index-maintenance text, the Browse
-copy (mode/scope labels, status pills, check summary, re-index and forget
-controls, truncation notes), the Logs copy (log list, N input, debug toggle,
-export button, and result messages), and the unsaved marker all have their own
-keys in both locales.
+copy (mode/scope labels, status pills, search form and result/score copy,
+check summary, re-index and forget controls, truncation notes), the Logs copy
+(log list, N input, debug toggle, export button, and result messages), and the
+unsaved marker all have their own keys in both locales.
 
 ## Theme tokens
 

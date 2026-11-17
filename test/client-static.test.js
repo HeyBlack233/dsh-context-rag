@@ -348,11 +348,12 @@ test('client.js: EN/ZH parity for every UI translation key', () => {
 // Browse tab (static contracts)
 // ---------------------------------------------------------------------------
 
-test('client.js: browse actions call browse.scopes/list/get/check/reindex/forget', () => {
+test('client.js: browse actions call browse.scopes/list/search/get/check/reindex/forget', () => {
   const text = readClient();
   for (const action of [
     'browse.scopes',
     'browse.list',
+    'browse.search',
     'browse.get',
     'browse.check',
     'browse.reindex',
@@ -362,6 +363,8 @@ test('client.js: browse actions call browse.scopes/list/get/check/reindex/forget
   }
   assert.ok(text.includes('BROWSE_PAGE_SIZE'), 'must define the browse page size');
   assert.ok(text.includes('limit: BROWSE_PAGE_SIZE'), 'must send BROWSE_PAGE_SIZE as the list limit');
+  assert.ok(text.includes('BROWSE_SEARCH_LIMIT'), 'must define the browse search limit');
+  assert.ok(text.includes('limit: BROWSE_SEARCH_LIMIT'), 'must send BROWSE_SEARCH_LIMIT as the search limit');
 });
 
 test('client.js: EN/ZH parity for every Browse tab translation key', () => {
@@ -382,6 +385,9 @@ test('client.js: EN/ZH parity for every Browse tab translation key', () => {
     'browseMetaIndexedAt', 'browseMetaPairId', 'browseMetaSessionId', 'browseMetaTurn',
     'browseMetaOutbox', 'browseMetaReason', 'browseMetaAttempts', 'browseMetaLastError',
     'globalLabel', 'workspaceLabel', 'browseWorkspaceUnavailable', 'browseEmbeddingDisabled',
+    'browseSearchPlaceholder', 'browseSearch', 'browseSearching', 'browseClearSearch',
+    'browseSearchResults', 'browseSearchEmpty', 'browseSearchFailed', 'browseSearchReranked',
+    'browseSearchCosine', 'browseSearchScore', 'browseSearchStatusLine', 'browseSearchRerankFallback',
   ];
   for (const key of browseKeys) {
     const pattern = new RegExp(`${key}\\s*:`, 'g');
@@ -441,11 +447,11 @@ test('client.js: Browse render uses translation keys only, no hard-coded visible
   const stripped = block.replace(/t\("[^"]*"\)/g, 't("")');
   const allowedTokens = new Set([
     // HTML tag names / input types
-    'div', 'span', 'button', 'h2', 'h3', 'p', 'pre', 'select', 'option',
+    'div', 'span', 'button', 'form', 'h2', 'h3', 'p', 'pre', 'select', 'option',
     'label', 'input', 'strong', 'checkbox',
     // aria / role tokens
     'aria-current', 'aria-label', 'aria-labelledby', 'aria-live', 'aria-pressed',
-    'group', 'list', 'polite', 'region', 'status', 'tabpanel',
+    'group', 'list', 'polite', 'region', 'search', 'status', 'submit', 'tabpanel',
     // browse kind / scope / state keys
     'memories', 'pairs', 'memory', 'all', 'global', 'workspace', 'workspace:',
     'consistent', 'pending', 'orphan', 'error', 'true', '__browse-more',

@@ -24,8 +24,8 @@ mode, with the dedupe history kept in a separate `recall-state.json`.
 | [architecture.md](architecture.md) | End-to-end overview: the two data flows (conversation pairs + memories), module map, and lifecycle. |
 | [configuration.md](configuration.md) | Every configurable field and its default, for all subsystems; memory recall reuses the embedding/retrieval settings. |
 | [storage-and-data-model.md](storage-and-data-model.md) | Data home, the JSONL pair log, the memory Markdown files, the SQLite index, the recall-state file, and the per-entry index-consistency states. |
-| [retrieval-and-injection.md](retrieval-and-injection.md) | The read path: query, candidate scan over pairs and memories, scoring, and injection. |
-| [configuration-page.md](configuration-page.md) | The GUI config panel on the plugin page: Dashboard/Browse/Configuration/Logs tabs, status strip, actions, API-key handling, and bilingual UI. |
+| [retrieval-and-injection.md](retrieval-and-injection.md) | The read path: query, candidate scan over pairs and memories, scoring, and injection — plus the manual Browse search that shares the same scoring stage. |
+| [configuration-page.md](configuration-page.md) | The GUI config panel on the plugin page: Dashboard/Browse/Configuration/Logs tabs, status strip, actions (including the Browse manual search), API-key handling, and bilingual UI. |
 | [testing.md](testing.md) | How to run checks/tests, what the suites cover, and manual verification. |
 | [compatibility.md](compatibility.md) | Supported DSH release range, how DSH enforces it, and how to widen or narrow it. |
 | [security-and-privacy.md](security-and-privacy.md) | Local storage, API-key handling, scope, the prompt-injection caveat for pairs and memories, and what the Browse tab exposes. |

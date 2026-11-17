@@ -49,6 +49,7 @@ test/
 ├── render.test.js
 ├── rerank.test.js
 ├── retrieval.test.js
+├── search.test.js
 ├── text.test.js
 └── helpers/
     ├── http-server.js   # local fake HTTP server for endpoint tests
@@ -63,24 +64,25 @@ test/
 | `paths` | Data-home resolution and every path underneath it. |
 | `text` | Text normalization, `minMessageLength` word/Han counting, and character truncation. |
 | `pairs` | Reading/appending the JSONL pair log and text-hash computation. |
-| `db` | SQLite schema creation (including the non-destructive memory-column migration), connection handling, atomic writes, and the lightweight `indexRows()` view (text hash, model/dim, embedding byte length, outbox join) that backs the browse/audit service. |
+| `db` | SQLite schema creation (including the non-destructive memory-column migration), connection handling, atomic writes, the lightweight `indexRows()` view (text hash, model/dim, embedding byte length, outbox join) that backs the browse/audit service, and the `searchCandidates({scope, kinds, model, dim, limit})` manual-search candidate query (scope/kind merging with recall memory semantics, model/dim filtering, limit/default, validation). |
 | `http` | The shared HTTP client behavior (timeouts, retries, errors). |
 | `embeddings` | Calling the embedding API and producing normalized vectors. |
 | `rerank` | The optional OpenAI-compatible rerank endpoint call. |
 | `capture` | Turn-stopping capture: what to store, the short-message skip (no JSONL/DB/outbox), and outbox enqueueing. |
 | `indexer` | Background worker: draining the outbox (pairs and memories), batching, retry; plus the single-entry synchronous re-index (`reindexEntry`): fresh source re-read, outbox fallback with `{queued: true}` on failure, and the text-hash compare-and-swap that refuses to overwrite newer text. |
-| `browse` | The browse/audit service (`lib/browse.js`): scope discovery with per-scope counts, paged listing (memories by name, pairs newest first), per-entry detail reads (200-char previews, 200,000-char text caps with truncation flags, outbox info), and the full scope audit — status counts, the 500-entry mismatch cap with the `truncated` flag, orphan reporting, and malformed-JSONL-line counting. It pins the `computeStatus` precedence (`missing` → `stale-text` → `pending` → `corrupt` → `model-mismatch` → `consistent`), the fail-open `unknown` state, and the model/dim check being skipped when no embedding model is configured. |
+| `browse` | The browse/audit service (`lib/browse.js`): scope discovery with per-scope counts, paged listing (memories by name, pairs newest first), per-entry detail reads (200-char previews, 200,000-char text caps with truncation flags, outbox info), the full scope audit — status counts, the 500-entry mismatch cap with the `truncated` flag, orphan reporting, and malformed-JSONL-line counting — and the manual search: scope normalization, shaped memory+pair items with no engine-metadata leakage (raw vectors, `userText`/`assistantText`, and memory `content` never reach the client), orphan dropping with `stats.excludedOrphan`, engine-stats merging, score-descending order, and `NOT_READY` (503) when no search engine is configured. It pins the `computeStatus` precedence (`missing` → `stale-text` → `pending` → `corrupt` → `model-mismatch` → `consistent`), the fail-open `unknown` state, and the model/dim check being skipped when no embedding model is configured. |
 | `render` | Building the injected context text from retrieved pairs and memories. |
-| `retrieval` | Query embedding, candidate scan over pairs and memories, scoring, and top-K selection. |
+| `retrieval` | Query embedding, candidate scan over pairs and memories, scoring via the shared `lib/ranking.js` stage, and top-K selection. |
+| `search` | The manual search service (`lib/search.js`): query trimming and the `INVALID_INPUT` (400) / `EMBEDDING_NOT_CONFIGURED` (409) errors, cosine scoring with `minScore` and the final limit, rerank reordering with `rerankMinScore` and `topN = limit`, the 50-result cap, the cosine fallback with `stats.rerankError`, scope/kinds/model/dim/scanLimit forwarding, stats reporting, signal/timeout handling, and the guarantee that the query text never appears in log lines. |
 | `recall-state` | Persistent turn-dedupe state: load/prune/record/remove/eligibility, retention by days and max sessions, corrupt/missing-file handling, and atomic persistence. |
 | `inject` | Per-user-message dedupe, the short-message gate, and attaching the injected context message. |
 | `memories` | Memory store: Markdown + YAML front matter, `MEMORY.md` index maintenance, `.forgotten` handling, name/content validation, the startup sync scan, and the exact-match `remove` shared by `memory_forget` and forget-from-Browse. |
 | `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, turn-dedupe recording on write and cleanup on forget, and error mapping. |
 | `log-buffer` | The in-memory ring buffer: latest-N window and trimming, logger tee, text serialization, and export (file naming, collision suffix, header, and mode `0600`). |
-| `api` | The host-facing HTTP API, trust checks, actions (including `logs.get`, `logs.configure`, `logs.export`, and the `browse.*` family — scope validation, kind/paging validation, the audit, single-entry re-index, and forget), and error mapping. |
+| `api` | The host-facing HTTP API, trust checks, actions (including `logs.get`, `logs.configure`, `logs.export`, and the `browse.*` family — scope validation, kind/paging validation, the audit, the manual search `browse.search` (query trimming and the 2000-char cap, limit 1..50, scope validation, engine construction from shared deps, stable error mapping), single-entry re-index, and forget), and error mapping. |
 | `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, the short-message gate suppressing both capture and injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. Logging is covered end-to-end too: the logger tee feeds the ring buffer, config changes resize it, and an export writes the `logs/` file. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, the DSH compatibility range, and the no-icon contract. |
-| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring (four tabs, Dashboard → Browse → Configuration → Logs) and accessibility, the Browse tab (mode/scope controls, split view, status pills, check-index audit, only-mismatched filter, re-index and two-click forget, lazy load without polling, page size 20, preview/truncation caps, theme-token status colors, EN/ZH key parity), the Logs tab (log list, N input, debug toggle, export button, and active-tab auto-refresh), action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
+| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring (four tabs, Dashboard → Browse → Configuration → Logs) and accessibility, the Browse tab (mode/scope controls, split view, status pills, manual search: the search form with Search/Clear, `browse.search` calls with the 20-result `BROWSE_SEARCH_LIMIT`, mixed result rows with kind badge and score pill, re-run on scope change/refresh/re-index/forget, mode toggle disabled while a search is active, only-mismatched exiting the search, and the EN/ZH search keys; plus the check-index audit, re-index and two-click forget, lazy load without polling, page size 20, preview/truncation caps, theme-token status colors, EN/ZH key parity), the Logs tab (log list, N input, debug toggle, export button, and active-tab auto-refresh), action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
 
 The `integration` suite is the end-to-end proof; the `api` suite covers the
 HTTP boundary itself.
@@ -184,6 +186,20 @@ live session:
     `<name>.forgotten` (still on disk), the `MEMORY.md` index no longer lists
     it, and its SQLite row and recall-state entries are gone. Verify leaving
     the tab disarms a pending confirmation.
+19. **Search from Browse** — with an embedding endpoint configured, type a
+    query into the Browse search box and click **Search** (or press Enter).
+    Confirm the result list mixes memories and message pairs (each row shows a
+    kind badge, a `Score 0.xxx` pill marked `cosine` or `Rerank`, and the
+    index-status pill), that an empty query does nothing, and that the
+    Memories/Pairs mode toggle is disabled while a search is active. Change
+    the scope and confirm the search re-runs against the new scope; click
+    **Refresh** and confirm the active search re-runs. Enable **Only
+    mismatched** and confirm the search exits; clear the search and confirm
+    the current mode's normal list returns. With `rerank.enabled` on, stop the
+    rerank endpoint and re-run a search to confirm the fallback note ("Rerank
+    unavailable — cosine scores shown") appears. Disable embedding (or clear
+    `model`/`baseUrl`) and confirm the search reports a failure without
+    echoing the query text.
 
 See [operations.md](operations.md) for the data paths and
 [retrieval-and-injection.md](retrieval-and-injection.md) for how injected

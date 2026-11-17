@@ -51,19 +51,23 @@ Trajectory so you can see exactly what was retrieved and used.
   SQLite.
 - **Configure panel** on the plugin's page in the DSH Web GUI (above the
   **Components** section), with four tabs — **Dashboard** (status and index
-  maintenance), **Browse** (inspect stored memories and pairs, check index
-  consistency, re-index a single entry, forget a memory), **Configuration**
-  (settings, advanced JSON, and save/test actions), and **Logs** (in-memory
-  log window with buffer-size and debug controls, and manual export) — with
-  **English and Simplified Chinese** UI.
+  maintenance), **Browse** (inspect stored memories and pairs, search them by
+  meaning, check index consistency, re-index a single entry, forget a memory),
+  **Configuration** (settings, advanced JSON, and save/test actions), and
+  **Logs** (in-memory log window with buffer-size and debug controls, and
+  manual export) — with **English and Simplified Chinese** UI.
 - **Browse tab + index consistency check**: browse stored memories and message
   pairs per scope (all / global / workspaces) in a split list/detail view,
   each entry carrying a status pill (`consistent`, `missing`, `stale-text`,
-  `pending`, `model-mismatch`, `corrupt`, `orphan`, `unknown`). The
-  **Check index** action audits the current scope on demand — status counts,
-  mismatched entries, orphans, and malformed JSONL lines — and any
-  non-consistent entry can be **re-indexed** individually or forgotten with a
-  two-click confirm (see
+  `pending`, `model-mismatch`, `corrupt`, `orphan`, `unknown`). A **manual
+  search** finds matching memories and message pairs by meaning in one scope —
+  mixed results over both kinds (memories + pairs, cosine + optional rerank
+  scoring with a `Score 0.xxx · cosine|rerank` pill, up to 20 results), run
+  only on demand (Search button or Enter) and read-only (hits are re-read from
+  the sources; orphaned index rows are dropped). The **Check index** action
+  audits the current scope on demand — status counts, mismatched entries,
+  orphans, and malformed JSONL lines — and any non-consistent entry can be
+  **re-indexed** individually or forgotten with a two-click confirm (see
   [Index consistency states](docs/storage-and-data-model.md#index-consistency-states)
   and [Operations](docs/operations.md#index-consistency-check-and-repair)).
 

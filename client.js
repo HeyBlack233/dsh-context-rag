@@ -88,6 +88,8 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------
 
     const BROWSE_PAGE_SIZE = 20;
+    // Manual search returns at most this many mixed results (memories + pairs).
+    const BROWSE_SEARCH_LIMIT = 20;
 
     function browseBasename(path) {
       if (!path) return "";
@@ -240,6 +242,16 @@ window.__ModuleLoader__.load({
       const [browseBusy, setBrowseBusy] = React.useState("");
       const [browseBanner, setBrowseBanner] = React.useState(null);
       const [browseConfirmForget, setBrowseConfirmForget] = React.useState(false);
+      // Manual search over memories + pairs. browseSearchQuery holds the raw
+      // input text; browseSearchActive is the query currently displayed (null
+      // while the search is off); browseSearchResult is the last successful
+      // browse.search response. Search state lives in-page, so results may
+      // persist across tab switches.
+      const [browseSearchQuery, setBrowseSearchQuery] = React.useState("");
+      const [browseSearchActive, setBrowseSearchActive] = React.useState(null);
+      const [browseSearchResult, setBrowseSearchResult] = React.useState(null);
+      const [browseSearching, setBrowseSearching] = React.useState(false);
+      const [browseSearchError, setBrowseSearchError] = React.useState("");
       // Monotonic epochs invalidate in-flight list loads, checks, and detail
       // fetches after a scope/mode switch, so a stale response can never
       // overwrite newer state.
@@ -573,9 +585,68 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // Manual search over memories + message pairs. The active query is set
+      // by the submit handler before the fetch starts; re-runs (scope change,
+      // refresh, re-index, forget, re-entering the tab) keep it. Runs share
+      // the browse epoch, so a stale search or list response can never
+      // overwrite newer state.
+      const runBrowseSearch = async (query, scope) => {
+        const epoch = ++browseEpochRef.current;
+        setBrowseSearching(true);
+        setBrowseSearchError("");
+        try {
+          const value = await call("browse.search", { query, scope, limit: BROWSE_SEARCH_LIMIT });
+          if (epoch !== browseEpochRef.current) return null;
+          setBrowseSearchResult(value);
+          return value;
+        } catch (err) {
+          if (epoch !== browseEpochRef.current) return null;
+          setBrowseSearchError(err.message);
+          return null;
+        } finally {
+          if (epoch === browseEpochRef.current) setBrowseSearching(false);
+        }
+      };
+
+      const submitBrowseSearch = (event) => {
+        event.preventDefault();
+        const query = browseSearchQuery.trim();
+        // Empty/whitespace query does nothing (the default submit is still
+        // prevented so the page does not reload).
+        if (!query) return;
+        // A fresh query replaces the selection: the old detail may not belong
+        // to the new result set.
+        setBrowseSelected(null);
+        setBrowseDetail(null);
+        setBrowseDetailError("");
+        setBrowseConfirmForget(false);
+        setBrowseSearchActive(query);
+        setBrowseSearchResult(null);
+        runBrowseSearch(query, browseScope);
+      };
+
+      // Turns the search off and returns to the current mode's list. When a
+      // search was active the list is reloaded (which also bumps the shared
+      // epoch, dropping any in-flight search response); with only input text
+      // present the untouched list stays as is.
+      const clearBrowseSearch = () => {
+        const wasActive = browseSearchActive !== null;
+        setBrowseSearchQuery("");
+        setBrowseSearchActive(null);
+        setBrowseSearchResult(null);
+        setBrowseSearchError("");
+        setBrowseSearching(false);
+        setBrowseSelected(null);
+        setBrowseDetail(null);
+        setBrowseDetailError("");
+        setBrowseConfirmForget(false);
+        if (wasActive) reloadBrowse(browseScope, browseKind, 0);
+      };
+
       // Lazy load on first entry: scopes first, then the list for the current
       // kind/scope. Runs every time the Browse tab becomes active, never while
-      // it is hidden, and never on a timer.
+      // it is hidden, and never on a timer. An active search is re-run so its
+      // scores and index status are fresh; otherwise the plain list loads.
       React.useEffect(() => {
         if (activeTab !== "browse") return;
         let alive = true;
@@ -589,7 +660,11 @@ window.__ModuleLoader__.load({
             setBrowseScopes(scopes);
             const scope = fixupBrowseScope(browseScope, scopes, browseKind);
             if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
-            await reloadBrowse(scope, browseKind, 0);
+            if (browseSearchActive) {
+              await runBrowseSearch(browseSearchActive, scope);
+            } else {
+              await reloadBrowse(scope, browseKind, 0);
+            }
           } catch (err) {
             if (alive) setBrowseError(err.message);
           } finally {
@@ -602,9 +677,12 @@ window.__ModuleLoader__.load({
 
       // Mode switch: clear selection, invalidate the check result, keep the
       // scope if it is still valid for the new kind (global is memories-only,
-      // so pairs fall back to "all"), reload the list.
+      // so pairs fall back to "all"), reload the list. The mode buttons are
+      // disabled while a search is active (the search is mixed), so this only
+      // runs from the toolbar.
       const switchBrowseKind = (kind) => {
         if (kind === browseKind) return;
+        if (browseSearchActive !== null) return;
         setBrowseKind(kind);
         setBrowseSelected(null);
         setBrowseDetail(null);
@@ -619,6 +697,8 @@ window.__ModuleLoader__.load({
       };
 
       // Scope change: clear selection and the check result, reload the list.
+      // While a search is active the search is re-run against the new scope
+      // instead of falling back to the plain list.
       const changeBrowseScope = (scope) => {
         if (sameBrowseScope(scope, browseScope)) return;
         setBrowseScope(scope);
@@ -629,6 +709,10 @@ window.__ModuleLoader__.load({
         setBrowseOnlyMismatch(false);
         setBrowseConfirmForget(false);
         setBrowseList(null);
+        if (browseSearchActive !== null) {
+          runBrowseSearch(browseSearchActive, scope);
+          return;
+        }
         reloadBrowse(scope, browseKind, 0);
       };
 
@@ -641,12 +725,13 @@ window.__ModuleLoader__.load({
       // A manual refresh invalidates the last audit, so the check result and
       // the "only mismatched" filter are reset and the reader can re-run the
       // check. The selection survives only while its pairId is still listed
-      // on the refreshed first page.
+      // on the refreshed first page. While a search is active, Refresh re-runs
+      // the active search (scopes are still reloaded) instead of the list.
       const refreshBrowse = async () => {
         const epoch = ++browseEpochRef.current;
-        setBrowseLoading(true);
         setBrowseError("");
         setBrowseBanner(null);
+        if (browseSearchActive === null) setBrowseLoading(true);
         try {
           const scopesValue = await call("browse.scopes");
           if (epoch !== browseEpochRef.current) return;
@@ -654,6 +739,10 @@ window.__ModuleLoader__.load({
           setBrowseScopes(scopes);
           const scope = fixupBrowseScope(browseScope, scopes, browseKind);
           if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
+          if (browseSearchActive !== null) {
+            await runBrowseSearch(browseSearchActive, scope);
+            return;
+          }
           setBrowseCheck(null);
           setBrowseOnlyMismatch(false);
           const value = await loadBrowseList(scope, browseKind, 0);
@@ -671,8 +760,9 @@ window.__ModuleLoader__.load({
         } catch (err) {
           if (epoch !== browseEpochRef.current) return;
           setBrowseError(err.message);
+          if (browseSearchActive !== null) setBrowseSearchError(err.message);
         } finally {
-          if (epoch === browseEpochRef.current) setBrowseLoading(false);
+          if (epoch === browseEpochRef.current && browseSearchActive === null) setBrowseLoading(false);
         }
       };
 
@@ -728,7 +818,9 @@ window.__ModuleLoader__.load({
           if (epoch !== browseEpochRef.current) return;
           setBrowseBanner({ kind: "error", text: t("browseCheckError") + ": " + err.message });
         } finally {
-          if (epoch === browseEpochRef.current) setBrowseChecking(false);
+          // The spinner belongs to this request only; stop it even when a
+          // newer request invalidated the epoch and its result was dropped.
+          setBrowseChecking(false);
         }
       };
 
@@ -760,9 +852,14 @@ window.__ModuleLoader__.load({
           setBrowseScopes(scopes);
           const scope = fixupBrowseScope(browseScope, scopes, browseKind);
           if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
-          await reloadBrowse(scope, browseKind, 0);
-          // Keep the "only mismatched" view truthful after a repair.
-          if (browseOnlyMismatch) await runBrowseCheck();
+          if (browseSearchActive !== null) {
+            // Refresh the active search so scores and status stay current.
+            await runBrowseSearch(browseSearchActive, scope);
+          } else {
+            await reloadBrowse(scope, browseKind, 0);
+            // Keep the "only mismatched" view truthful after a repair.
+            if (browseOnlyMismatch) await runBrowseCheck();
+          }
         } catch (err) {
           setBrowseBanner({ kind: "error", text: err.message });
         } finally {
@@ -779,9 +876,14 @@ window.__ModuleLoader__.load({
           const fresh = await refreshSelectedDetail(detail.pairId);
           const state = fresh && fresh.status && fresh.status.state;
           setBrowseBanner({ kind: "success", text: state === "pending" ? t("reindexQueued") : t("reindexDone") });
-          await reloadBrowse(browseScope, browseKind, 0);
-          // Keep the "only mismatched" view truthful after a repair.
-          if (browseOnlyMismatch) await runBrowseCheck();
+          if (browseSearchActive !== null) {
+            // Refresh the active search so scores and status stay current.
+            await runBrowseSearch(browseSearchActive, browseScope);
+          } else {
+            await reloadBrowse(browseScope, browseKind, 0);
+            // Keep the "only mismatched" view truthful after a repair.
+            if (browseOnlyMismatch) await runBrowseCheck();
+          }
         } catch (err) {
           setBrowseBanner({
             kind: "error",
@@ -1113,19 +1215,120 @@ window.__ModuleLoader__.load({
           }, t("browseLoadMore"))
         : null;
 
-      const listBody = browseLoading && !browseList && !browseOnlyMismatch
-        ? el("p", { className: "dscr-browse-empty", role: "status" }, t("browseLoading"))
-        : browseError && !browseOnlyMismatch
-        ? el("p", { className: "dscr-browse-error", role: "status" }, t("browseLoadError") + ": " + browseError)
-        : visibleItems.length === 0
-        ? el("p", { className: "dscr-browse-empty" },
-            browseOnlyMismatch ? t("browseEmptyMismatch") : t(browseKind === "memories" ? "browseEmptyMemories" : "browseEmptyPairs"))
-        : el("div", { className: "dscr-browse-list-scroll", role: "list", "aria-label": t("browseListLabel"), tabIndex: 0 },
-            ...visibleItems.map(browseKind === "memories" ? memoryRow : pairRow),
-            browseMore);
+      // Manual search controls: one form above the toolbar. Enter submits via
+      // the form; the Search button is its submit button; Clear appears while
+      // a search is active or the input is non-empty.
+      const searchForm = el("form", {
+        className: "dscr-browse-search",
+        role: "search",
+        onSubmit: submitBrowseSearch,
+      },
+        el("input", {
+          className: "dscr-input dscr-browse-search-input",
+          "aria-label": t("browseSearchPlaceholder"),
+          placeholder: t("browseSearchPlaceholder"),
+          value: browseSearchQuery,
+          onChange: (e) => setBrowseSearchQuery(e.target.value),
+        }),
+        el("button", {
+          className: "dscr-btn",
+          type: "submit",
+          disabled: browseSearching,
+        }, t("browseSearch")),
+        browseSearchActive !== null || browseSearchQuery.trim() !== ""
+          ? el("button", {
+              className: "dscr-btn",
+              type: "button",
+              onClick: clearBrowseSearch,
+            }, t("browseClearSearch"))
+          : null);
+
+      // Mixed results list shown while a search is active, replacing the
+      // normal browse list. Each row reuses the browse row look and adds a
+      // kind badge plus a score pill (final score to 3 decimals with a small
+      // cosine/rerank marker).
+      const searchScorePill = (item) =>
+        Number.isFinite(item.score)
+          ? el("span", { className: "dscr-browse-search-pill dscr-browse-search-score" },
+              t("browseSearchScore") + " " + Number(item.score).toFixed(3),
+              " · ",
+              el("span", { className: "dscr-browse-search-marker" }, item.reranked ? t("browseSearchReranked") : t("browseSearchCosine")))
+          : null;
+
+      const searchRow = (item) => {
+        const orphan = item.status && item.status.state === "orphan";
+        const selected = browseSelected === item.pairId;
+        const isMemory = item.kind === "memory";
+        const metaParts = [];
+        if (!isMemory) {
+          if (item.cwd) metaParts.push(browseBasename(item.cwd));
+          if (item.sessionId) metaParts.push(String(item.sessionId).slice(-8));
+          if (item.turn !== undefined && item.turn !== null) metaParts.push(t("browseMetaTurn") + " " + item.turn);
+        }
+        return el("button", {
+          key: item.pairId,
+          className: "dscr-browse-row" + (selected ? " dscr-browse-row-selected" : ""),
+          type: "button",
+          disabled: orphan,
+          "aria-current": selected ? "true" : undefined,
+          onClick: () => selectBrowseRow(item),
+        },
+          // The title gets a full line of its own so the badges cannot squeeze
+          // it; the badges wrap on a separate line below.
+          el("span", { className: "dscr-browse-row-head" },
+            el("span", { className: "dscr-browse-row-main" }, isMemory ? (item.name || "") : (item.preview || ""))),
+          el("span", { className: "dscr-browse-row-badges" },
+            el("span", { className: "dscr-browse-search-kind" }, isMemory ? t("browseMemories") : t("browsePairs")),
+            searchScorePill(item),
+            statusPill(item.status),
+            isMemory ? memoryBadge(item.memoryType) : null),
+          el("span", { className: "dscr-browse-row-sub" },
+            isMemory
+              ? el("span", { className: "dscr-browse-row-desc" }, item.description || "")
+              : el("span", { className: "dscr-browse-row-meta" }, metaParts.join(" · ")),
+            el("span", { className: "dscr-browse-row-date" }, browseDate(item.createdAt))));
+      };
+
+      const searchResults = Array.isArray(browseSearchResult && browseSearchResult.results) ? browseSearchResult.results : [];
+      const searchStats = browseSearchResult && browseSearchResult.stats;
+      const rerankUsed = !!(searchStats && searchStats.reranked);
+      const rerankFallback = searchStats && searchStats.rerankError;
+
+      const searchStatusLine = browseSearchResult && !browseSearchError
+        ? el("div", { className: "dscr-browse-search-status", role: "status" },
+            t("browseSearchStatusLine") + ": " + browseSearchActive + " · " + searchResults.length + " " + t("browseSearchResults"),
+            " · " + (rerankUsed ? t("browseSearchReranked") : t("browseSearchCosine")),
+            rerankFallback ? el("span", { className: "dscr-browse-search-fallback" }, " · " + t("browseSearchRerankFallback")) : null)
+        : null;
+
+      let listBody;
+      if (browseSearchActive !== null) {
+        if (browseSearchError) {
+          listBody = el("p", { className: "dscr-browse-error", role: "status" }, t("browseSearchFailed") + ": " + browseSearchError);
+        } else if (browseSearching && searchResults.length === 0) {
+          listBody = el("p", { className: "dscr-browse-empty", role: "status" }, t("browseSearching"));
+        } else if (searchResults.length === 0) {
+          listBody = el("p", { className: "dscr-browse-empty", role: "status" }, t("browseSearchEmpty"));
+        } else {
+          listBody = el("div", { className: "dscr-browse-list-scroll", role: "list", "aria-label": t("browseListLabel"), tabIndex: 0 },
+            ...searchResults.map(searchRow));
+        }
+      } else {
+        listBody = browseLoading && !browseList && !browseOnlyMismatch
+          ? el("p", { className: "dscr-browse-empty", role: "status" }, t("browseLoading"))
+          : browseError && !browseOnlyMismatch
+          ? el("p", { className: "dscr-browse-error", role: "status" }, t("browseLoadError") + ": " + browseError)
+          : visibleItems.length === 0
+          ? el("p", { className: "dscr-browse-empty" },
+              browseOnlyMismatch ? t("browseEmptyMismatch") : t(browseKind === "memories" ? "browseEmptyMemories" : "browseEmptyPairs"))
+          : el("div", { className: "dscr-browse-list-scroll", role: "list", "aria-label": t("browseListLabel"), tabIndex: 0 },
+              ...visibleItems.map(browseKind === "memories" ? memoryRow : pairRow),
+              browseMore);
+      }
 
       const listPanel = el("div", { className: "dscr-browse-list", role: "region", "aria-label": t("browseListLabel") },
         el("h3", { className: "dscr-browse-panel-title" }, t("browseListLabel")),
+        searchStatusLine,
         listBody);
 
       const detailMetaRow = (label, value) =>
@@ -1250,7 +1453,9 @@ window.__ModuleLoader__.load({
             className: "dscr-browse-mode-btn" + (browseKind === "memories" ? " dscr-browse-mode-active" : ""),
             type: "button",
             "aria-pressed": browseKind === "memories",
-            disabled: browseLoading || browseBusy !== "",
+            // The search is mixed, so the mode toggle is disabled while one is
+            // active; clearing the search re-enables it.
+            disabled: browseLoading || browseBusy !== "" || browseSearchActive !== null,
             onClick: () => switchBrowseKind("memories"),
           }, t("browseMemories") + " (" + (scopeInfo.memories ?? 0) + ")"),
           el("button", {
@@ -1258,7 +1463,7 @@ window.__ModuleLoader__.load({
             className: "dscr-browse-mode-btn" + (browseKind === "pairs" ? " dscr-browse-mode-active" : ""),
             type: "button",
             "aria-pressed": browseKind === "pairs",
-            disabled: browseLoading || browseBusy !== "",
+            disabled: browseLoading || browseBusy !== "" || browseSearchActive !== null,
             onClick: () => switchBrowseKind("pairs"),
           }, t("browsePairs") + " (" + (scopeInfo.pairs ?? 0) + ")")),
         el("select", {
@@ -1300,7 +1505,13 @@ window.__ModuleLoader__.load({
             type: "checkbox",
             checked: browseOnlyMismatch,
             disabled: !browseCheck || browseChecking || browseBusy !== "",
-            onChange: (e) => setBrowseOnlyMismatch(e.target.checked),
+            onChange: (e) => {
+              const checked = e.target.checked;
+              // Enabling the filter exits any active search: the mismatch list
+              // replaces the mixed search results.
+              if (checked) clearBrowseSearch();
+              setBrowseOnlyMismatch(checked);
+            },
           }),
           " " + t("onlyMismatched")));
 
@@ -1314,6 +1525,7 @@ window.__ModuleLoader__.load({
         el("div", { className: "dscr-card" },
           el("h2", { className: "dscr-title" }, t("browseTab")),
           el("p", { className: "dscr-help" }, t("browseHelp")),
+          searchForm,
           browseToolbar,
           checkLine,
           browseBannerNode,
@@ -1392,7 +1604,7 @@ window.__ModuleLoader__.load({
         logCount: "entries", logPollError: "Auto refresh failed", logsLabel: "Log entries",
         // Browse tab
         browseTab: "Browse",
-        browseHelp: "Browse the stored memories and message pairs, inspect their index status, check index consistency, re-index a single entry, or forget a memory.",
+        browseHelp: "Browse or search the stored memories and message pairs by meaning, inspect their index status, check index consistency, re-index a single entry, or forget a memory.",
         browseMemories: "Memories", browsePairs: "Pairs",
         browseModeLabel: "Data set",
         browseScopeGlobal: "Global",
@@ -1430,6 +1642,19 @@ window.__ModuleLoader__.load({
         globalLabel: "Global", workspaceLabel: "Workspace",
         browseWorkspaceUnavailable: "Workspace unavailable",
         browseEmbeddingDisabled: "Embedding is disabled or no embedding model is configured — re-index is disabled.",
+        // Manual search over memories + message pairs
+        browseSearchPlaceholder: "Search memories and message pairs…",
+        browseSearch: "Search",
+        browseSearching: "Searching…",
+        browseClearSearch: "Clear",
+        browseSearchResults: "results",
+        browseSearchEmpty: "No matching entries.",
+        browseSearchFailed: "Search failed",
+        browseSearchReranked: "Rerank",
+        browseSearchCosine: "cosine",
+        browseSearchScore: "Score",
+        browseSearchStatusLine: "Search results",
+        browseSearchRerankFallback: "Rerank unavailable — cosine scores shown",
       },
       zh: {
         title: "Context RAG",
@@ -1473,7 +1698,7 @@ window.__ModuleLoader__.load({
         logCount: "条目", logPollError: "自动刷新失败", logsLabel: "日志条目",
         // Browse tab
         browseTab: "浏览",
-        browseHelp: "浏览已保存的记忆与消息条目，查看索引状态，检查索引一致性，重新索引单条记录，或遗忘记忆。",
+        browseHelp: "浏览或按语义搜索已保存的记忆与消息条目，查看索引状态，检查索引一致性，重新索引单条记录，或遗忘记忆。",
         browseMemories: "记忆", browsePairs: "消息",
         browseModeLabel: "数据集",
         browseScopeGlobal: "全局",
@@ -1511,6 +1736,19 @@ window.__ModuleLoader__.load({
         globalLabel: "全局", workspaceLabel: "工作区",
         browseWorkspaceUnavailable: "工作区不可用",
         browseEmbeddingDisabled: "嵌入未启用或未配置嵌入模型——无法重新索引。",
+        // Manual search over memories + message pairs
+        browseSearchPlaceholder: "搜索记忆与消息条目…",
+        browseSearch: "搜索",
+        browseSearching: "搜索中…",
+        browseClearSearch: "清除",
+        browseSearchResults: "个结果",
+        browseSearchEmpty: "没有匹配的条目。",
+        browseSearchFailed: "搜索失败",
+        browseSearchReranked: "重排",
+        browseSearchCosine: "余弦",
+        browseSearchScore: "得分",
+        browseSearchStatusLine: "搜索结果",
+        browseSearchRerankFallback: "重排不可用——已显示余弦得分",
       },
     };
 
@@ -1539,6 +1777,9 @@ window.__ModuleLoader__.load({
             ".dscr-details .dscr-summary { cursor: pointer; margin: 0; } .dscr-details[open] .dscr-summary { margin-bottom: 12px; }",
             ".dscr-log-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 4px; } .dscr-log-control { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-control .dscr-input { width: 110px; } .dscr-log-count { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 4px 0 8px; } .dscr-log-pending { color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-error { font-size: 12px; color: var(--dsw-alias-state-error-primary, inherit); margin: 4px 0 8px; } .dscr-log-list { max-height: 360px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 8px; } .dscr-log-list:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; } .dscr-log-row { display: flex; gap: 8px; padding: 2px 0; color: var(--dsw-alias-label-primary, inherit); } .dscr-log-time { flex-shrink: 0; white-space: nowrap; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-level { flex-shrink: 0; font-weight: 600; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-level-error { color: var(--dsw-alias-state-error-primary, inherit); } .dscr-log-level-warn { color: var(--dsw-alias-state-warn-primary, inherit); } .dscr-log-message { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }",
             ".dscr-browse-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 8px; } .dscr-browse-scope { max-width: 220px; }",
+            ".dscr-browse-search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; } .dscr-browse-search-input { flex: 1 1 200px; min-width: 0; } .dscr-browse-search-status { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 0 0 8px; overflow-wrap: anywhere; } .dscr-browse-search-fallback { color: var(--dsw-alias-state-warn-primary, inherit); }",
+            ".dscr-browse-search-kind { flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 999px; color: var(--dsw-alias-label-secondary, inherit); background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2, inherit)); border: 1px solid var(--dsw-alias-border-l1); white-space: nowrap; } .dscr-browse-search-pill { flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 999px; color: var(--dsw-alias-label-secondary, inherit); background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2, inherit)); border: 1px solid var(--dsw-alias-border-l1); white-space: nowrap; } .dscr-browse-search-marker { font-weight: 600; }",
+            ".dscr-browse-row-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }",
             ".dscr-browse-mode { display: inline-flex; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); overflow: hidden; } .dscr-browse-mode-btn { padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--dsw-alias-label-secondary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 0; border-right: 1px solid var(--dsw-alias-border-l1); } .dscr-browse-mode-btn:last-child { border-right: 0; } .dscr-browse-mode-btn[aria-pressed='true'] { color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-1, inherit); font-weight: 600; } .dscr-browse-mode-btn:disabled { opacity: 0.5; cursor: default; } .dscr-browse-mode-btn:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: -2px; }",
             ".dscr-browse-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); cursor: pointer; } .dscr-browse-toggle input:disabled { cursor: default; }",
             ".dscr-browse-checkline { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 0 0 8px; overflow-wrap: anywhere; } .dscr-browse-check-title { font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-browse-check-mismatches { color: var(--dsw-alias-state-warn-primary, inherit); }",

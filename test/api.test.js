@@ -20,6 +20,8 @@ import { ConfigError } from "../lib/config.js";
 import { openIndexDatabase } from "../lib/db.js";
 import { createLogBuffer } from "../lib/log-buffer.js";
 import { createMemoryStore, MemoryError } from "../lib/memories.js";
+import { appendPair } from "../lib/pairs.js";
+import { pairFilePath } from "../lib/paths.js";
 
 /** Home used by the default fakes; never created, so fs-derived stats are 0. */
 const MISSING_HOME = join(tmpdir(), `dsh-rag-api-missing-${process.pid}`);
@@ -847,6 +849,28 @@ function makeBrowseService() {
     async statusOf(pairId) {
       return { kind: "pair", status: { state: "consistent", model: null, dim: null, indexedAt: null } };
     },
+    async search({ query, scope, limit }) {
+      calls.push(["search", { query, scope, limit }]);
+      return {
+        query,
+        scope,
+        limit,
+        results: [],
+        stats: {
+          scope,
+          kinds: ["memory", "pair"],
+          model: null,
+          dim: null,
+          candidateCount: 0,
+          returned: 0,
+          reranked: false,
+          rerankError: null,
+          latencyMs: 0,
+          excludedOrphan: 0,
+          malformedLines: 0,
+        },
+      };
+    },
   };
 }
 
@@ -961,6 +985,186 @@ test("browse.check: returns the audit and rejects invalid scopes", async () => {
     assert.equal(bad.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(payload)}`);
     assert.equal(bad.error.status, 400, `payload ${JSON.stringify(payload)}`);
   }
+});
+
+test("browse.search: forwards trimmed query + scope and defaults limit 20", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const result = await dispatch(
+    { action: "browse.search", payload: { query: "  build command  ", scope: { type: "workspace", cwd: "/w" } } },
+    { ...deps, browse },
+  );
+
+  assert.equal(result.ok, true);
+  const call = browse.calls[0];
+  assert.equal(call[0], "search");
+  assert.equal(call[1].query, "build command", "the query must be trimmed before forwarding");
+  assert.deepEqual(call[1].scope, { type: "workspace", cwd: "/w" });
+  assert.equal(call[1].limit, 20);
+  assert.equal(result.value.query, "build command");
+  assert.deepEqual(result.value.results, []);
+});
+
+test("browse.search: forwards a custom limit and accepts a 2000-char query", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const query = "q".repeat(2000);
+  const result = await dispatch(
+    { action: "browse.search", payload: { query, scope: { type: "global" }, limit: 5 } },
+    { ...deps, browse },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(browse.calls[0][1].query, query);
+  assert.equal(browse.calls[0][1].scope.type, "global");
+  assert.equal(browse.calls[0][1].limit, 5);
+});
+
+test("browse.search: rejects invalid payloads without calling the service", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const label = (payload) => (typeof payload === "string" ? "<string>" : JSON.stringify(payload));
+  const invalid = [
+    null,
+    "not-an-object",
+    [1, 2],
+    {},
+    { query: "" },
+    { query: "   " },
+    { query: 42 },
+    { query: ["q"] },
+    { query: "x".repeat(2001) }, // over the 2000-char cap
+    { query: "q", scope: { type: "nope" } },
+    { query: "q", scope: { type: "workspace" } }, // workspace without cwd
+    { query: "q", scope: null },
+    { query: "q", scope: { type: "all" }, limit: 0 },
+    { query: "q", scope: { type: "all" }, limit: 51 },
+    { query: "q", scope: { type: "all" }, limit: 2.5 },
+    { query: "q", scope: { type: "all" }, limit: "20" },
+    { query: "q", scope: { type: "all" }, limit: NaN },
+  ];
+  for (const payload of invalid) {
+    const result = await dispatch({ action: "browse.search", payload }, { ...deps, browse });
+    assert.equal(result.ok, false, `payload ${label(payload)} must be rejected`);
+    assert.equal(result.error.code, "INVALID_PAYLOAD", `payload ${label(payload)}`);
+    assert.equal(result.error.status, 400, `payload ${label(payload)}`);
+  }
+  assert.equal(browse.calls.length, 0, "the service must not be called for invalid payloads");
+});
+
+test("browse.search: NOT_READY 503 when no search-capable browse service exists", async () => {
+  const payload = { query: "q", scope: { type: "all" } };
+
+  const nullDeps = await dispatch({ action: "browse.search", payload }, null);
+  assert.equal(nullDeps.ok, false);
+  assert.equal(nullDeps.error.code, "NOT_READY");
+  assert.equal(nullDeps.error.status, 503);
+  assert.match(nullDeps.error.message, /search/i);
+
+  const { deps } = makeDeps();
+  const noSearch = await dispatch(
+    { action: "browse.search", payload },
+    { ...deps, browse: { scopes: async () => {} } }, // present but without a search method
+  );
+  assert.equal(noSearch.error.code, "NOT_READY");
+  assert.equal(noSearch.error.status, 503);
+
+  const stripped = await dispatch(
+    { action: "browse.search", payload },
+    { ...deps, browse: null, db: null, configStore: null, memoryStore: null },
+  );
+  assert.equal(stripped.error.code, "NOT_READY");
+  assert.equal(stripped.error.status, 503);
+});
+
+test("browse.search: maps engine errors with stable code/status unchanged", async () => {
+  const { deps } = makeDeps();
+  const payload = { query: "q", scope: { type: "all" } };
+
+  const notReady = new Error("Search service is not available");
+  notReady.code = "NOT_READY";
+  notReady.status = 503;
+  const nr = await dispatch(
+    { action: "browse.search", payload },
+    { ...deps, browse: { search: async () => { throw notReady; } } },
+  );
+  assert.equal(nr.ok, false);
+  assert.deepEqual(nr.error, {
+    code: "NOT_READY",
+    message: "Search service is not available",
+    status: 503,
+    details: null,
+  });
+
+  const unconfigured = new Error("Embedding is not configured: enabled is false");
+  unconfigured.code = "EMBEDDING_NOT_CONFIGURED";
+  unconfigured.status = 409;
+  const uc = await dispatch(
+    { action: "browse.search", payload },
+    { ...deps, browse: { search: async () => { throw unconfigured; } } },
+  );
+  assert.deepEqual(uc.error, {
+    code: "EMBEDDING_NOT_CONFIGURED",
+    message: "Embedding is not configured: enabled is false",
+    status: 409,
+    details: null,
+  });
+
+  const plain = await dispatch(
+    { action: "browse.search", payload },
+    { ...deps, browse: { search: async () => { throw new Error("boom"); } } },
+  );
+  assert.equal(plain.error.code, "INTERNAL_ERROR");
+  assert.equal(plain.error.status, 500);
+});
+
+test("browse.search: browseOf builds a search service from shared deps when deps.search is absent", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-rag-browse-search-"));
+  const configStore = {
+    home: dir,
+    get: () => ({
+      embedding: { enabled: true, model: "m", baseUrl: "http://fake", dimensions: 4, maxEmbeddingChars: 8000 },
+      retrieval: { minScore: 0, scanLimit: 100, timeoutMs: 5000 },
+      rerank: { enabled: false },
+    }),
+    masked: () => ({ embedding: { model: "m" } }),
+  };
+  const memoryStore = createMemoryStore({ home: dir, configStore, logger: null });
+  const db = openIndexDatabase(join(dir, "index.sqlite"));
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const cwd = "/w";
+  const f = pairFilePath({ home: dir, cwd, sessionId: "s1" });
+  const rec = { pairId: "p1", sessionId: "s1", cwd, turn: 0, createdAt: 1_700_000_000_000, user: "query me", assistant: "reply" };
+  await appendPair(f, rec);
+  db.upsertPair(rec);
+  db.setEmbedding("p1", new Float32Array([1, 0, 0, 0]), { model: "m", dim: 4 });
+
+  const embeddings = {
+    embed: async () => ({ vectors: [new Float32Array([1, 0, 0, 0])], model: "m" }),
+  };
+  // No deps.search and no deps.browse: browseOf must construct the engine.
+  const deps = { db, configStore, memoryStore, embeddings, reranker: null, logger: null };
+
+  const result = await dispatch(
+    { action: "browse.search", payload: { query: "query me", scope: { type: "all" } } },
+    deps,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.value.results.length, 1);
+  const item = result.value.results[0];
+  assert.equal(item.kind, "pair");
+  assert.equal(item.pairId, "p1");
+  assert.equal(item.status.state, "consistent");
+  assert.equal("vector" in item, false);
+  assert.equal("userText" in item, false);
+  assert.equal("assistantText" in item, false);
+  assert.equal("content" in item, false);
+  assert.equal(result.value.stats.returned, 1);
+  assert.equal(result.value.stats.excludedOrphan, 0);
+  assert.equal(result.value.stats.malformedLines, 0);
 });
 
 test("browse.reindex: re-indexes the entry and reports its fresh status", async () => {

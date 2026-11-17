@@ -32,9 +32,10 @@ The plugin has two independent, asynchronous flows over the same store.
    messages, applies the same `minMessageLength` gate, then embeds the query,
    scans the SQLite index for similar past pairs **and memories** (excluding
    same-session pairs by default and turn-deduped candidates in injection
-   mode), optionally reranks, and injects the top results into the conversation
-   as a read-only context message. A message below the gate is marked handled
-   but retrieves nothing, including memories.
+   mode), scores them through the shared cosine/rerank stage in
+   `lib/ranking.js`, optionally reranks, and injects the top results into the
+   conversation as a read-only context message. A message below the gate is
+   marked handled but retrieves nothing, including memories.
 
 Both flows are fail-open: timeouts or errors skip injection and log a warning
 rather than disrupting the turn.
@@ -48,20 +49,22 @@ rather than disrupting the turn.
 | `lib/paths.js` | Resolve the data home and all file paths underneath it. |
 | `lib/text.js` | Text normalization, short-message unit counting (Han characters and Latin/digit words), and character-truncation helpers. |
 | `lib/pairs.js` | Read and append the JSONL pair log; compute text hashes. |
-| `lib/db.js` | SQLite connection, schema creation, atomic writes; indexes memory vectors alongside pair vectors (shared outbox). |
+| `lib/db.js` | SQLite connection, schema creation, atomic writes; indexes memory vectors alongside pair vectors (shared outbox). Besides the retrieval candidate scan it exposes `searchCandidates({scope, kinds, model, dim, limit})` for the manual search. |
 | `lib/capture.js` | Turn-stopping capture: decide what to store (including the `minMessageLength` skip) and enqueue outbox rows. |
 | `lib/indexer.js` | Background worker: drain the shared outbox (pairs and memories), batch embeddings, write index, retry. |
 | `lib/embeddings.js` | Call the configured embedding API; produce normalized vectors. |
 | `lib/rerank.js` | Optional call to an OpenAI-compatible rerank endpoint. |
+| `lib/ranking.js` | Shared scoring stage: cosine similarity, the `minScore` filter, optional rerank over the top candidates, the `rerankMinScore` filter, and the final slice. Used by both `lib/retrieval.js` and `lib/search.js` so the two stay in lockstep. |
 | `lib/memories.js` | Memory store: read/write/forget Markdown memories, maintain `MEMORY.md` indexes, `.forgotten` handling, and the startup sync scan. |
 | `lib/memory-tools.js` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` agent tools; records successful writes and clears forgotten memories in the turn-dedupe state. |
-| `lib/retrieval.js` | Query embedding, candidate scan over pairs and memories (global + current workspace), scoring, top-K selection, and turn dedupe. |
+| `lib/retrieval.js` | Query embedding, candidate scan over pairs and memories (global + current workspace), scoring via the shared `lib/ranking.js` stage, top-K selection, and turn dedupe. |
+| `lib/search.js` | Reusable manual search service (kept in `deps.search`): embeds the query, pulls candidates via `db.searchCandidates`, runs the same `lib/ranking.js` stage, and reports stats; unlike retrieval it surfaces errors to callers. Backs the Browse search and is the intended base for a future agent tool. |
 | `lib/render.js` | Build the injected context text from retrieved pairs and memories. |
 | `lib/message.js` | Construct and manage context messages and their source metadata. |
 | `lib/inject.js` | Dedupe per user message, apply the short-message gate, attach the injected context message, and record the actually rendered candidates for turn dedupe. |
 | `lib/recall-state.js` | Persistent turn-dedupe state: per-(session, pair) last turn, timestamp, and count; entry removal for forgotten memories; retention pruning; atomic persistence. |
 | `lib/log-buffer.js` | In-memory ring buffer that tees the plugin logger (`ctx.logger`), keeps the latest `logging.bufferSize` entries (UTC time, level, message), serializes them as plain text, and writes manual exports. |
-| `lib/browse.js` | Read-only browse and audit service for the configuration page's Browse tab: scope discovery, paged source listing (memories/pairs), per-entry detail reads, per-entry index-consistency status, and the full scope audit. Never rewrites the sources or the index; single-entry repair is delegated to the indexer and the memory store. |
+| `lib/browse.js` | Read-only browse, search, and audit service for the configuration page's Browse tab: scope discovery, paged source listing (memories/pairs), manual search (delegating to `lib/search.js` and re-resolving hits against the sources), per-entry detail reads, per-entry index-consistency status, and the full scope audit. Never rewrites the sources or the index; single-entry repair is delegated to the indexer and the memory store. |
 | `lib/api.js` | Plugin-internal API surface (services exposed to the host). |
 | `client.js` | Web config page presented in the Harness GUI. |
 
@@ -74,8 +77,12 @@ consistency state (see
 [storage-and-data-model.md](storage-and-data-model.md#index-consistency-states))
 without mutating anything: `browse.scopes` / `browse.list` / `browse.get` /
 `browse.check` are pure reads, and the audit (`browse.check`) also reports
-orphan index rows and malformed JSONL lines. The only writes flow through the
-existing surfaces: per-entry re-index (`browse.reindex`) calls the indexer's
+orphan index rows and malformed JSONL lines. `browse.search` runs the manual
+search service (`lib/search.js`, kept in `deps.search`) — the same
+cosine/rerank scoring stage as the read path — then re-resolves every hit
+against the authoritative sources and drops orphaned index rows, so raw engine
+metadata never reaches the client. The only writes flow through the existing
+surfaces: per-entry re-index (`browse.reindex`) calls the indexer's
 synchronous `reindexEntry` (one embedding request, outbox fallback, text-hash
 CAS), and forget-from-Browse (`browse.forget`) calls the memory store's
 `remove` (`.forgotten` rename + index/recall-state cleanup).

@@ -27,6 +27,7 @@ import { createRecallState } from "./lib/recall-state.js";
 import { registerApi } from "./lib/api.js";
 import { createMemoryStore } from "./lib/memories.js";
 import { registerMemoryTools } from "./lib/memory-tools.js";
+import { createSearchService } from "./lib/search.js";
 
 /** Plugin row name. */
 export const name = "context-rag";
@@ -177,6 +178,7 @@ export function apply(ctx, config = {}) {
   let retriever = null;
   let injector = null;
   let memoryStore = null;
+  let search = null;
 
   // Memory store: Markdown memories plus the memory_* tools. Independent of
   // the index database (files are the source of truth) but needed by the
@@ -214,6 +216,16 @@ export function apply(ctx, config = {}) {
     } catch (err) {
       initError = `injector: ${messageOf(err)}`;
       logger.error(`[context-rag] failed to create injector: ${initError}`);
+    }
+
+    // One shared manual search engine for the Browse API (and, later, an
+    // agent tool). Independent of the retriever and fail-open like the other
+    // surfaces; the API answers NOT_READY when it is unavailable.
+    try {
+      search = createSearchService({ db, configStore, embeddings, reranker, logger });
+    } catch (err) {
+      initError ??= `search: ${messageOf(err)}`;
+      logger.error(`[context-rag] failed to create search service: ${initError}`);
     }
 
     if (capture) {
@@ -265,6 +277,7 @@ export function apply(ctx, config = {}) {
     db,
     embeddings,
     reranker,
+    search,
     indexer,
     retriever,
     injector,

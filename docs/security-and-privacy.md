@@ -97,6 +97,19 @@ Secrets are still never returned: the host API redacts API keys on read (see
 only stored message/memory content, ids, counts, and status — never
 configuration credentials.
 
+**Manual search sends the query to the embedding endpoint.** The Browse search
+embeds the query with the configured embedding API and — when `rerank.enabled`
+is on — sends it to the rerank endpoint, exactly like passive recall. The
+query text is **not logged and not stored**: log lines report only counts,
+kinds, and timings, and plugin-generated error messages never contain the
+query text (a misbehaving upstream endpoint could still echo it in its own
+error response body, which the GUI may surface). The
+results are the same local stored text already returned by the other browse
+actions (pair previews, memory names/descriptions, index status), shown in the
+local same-origin GUI — search introduces no new data exposure beyond what the
+rest of the Browse tab already shows, and it is read-only (orphaned index rows
+are dropped rather than surfaced).
+
 ## Retrieval scope
 
 Retrieval is scoped to control which past pairs are eligible (see

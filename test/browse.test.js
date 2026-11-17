@@ -61,10 +61,12 @@ function sampleMemoryRecord(pairId, overrides = {}) {
  * @param {number} [options.maxEmbeddingChars] - Memory content limit; must be
  *   high enough to read long memory bodies in truncation tests.
  * @param {{warn?: Function}} [options.logger] - Logger for fail-open checks.
+ * @param {object|null} [options.searchService] - Manual search engine passed
+ *   to `createBrowseService`.
  * @returns {Promise<{home: string, db: object, configStore: object,
  *   memoryStore: object, service: object}>}
  */
-async function makeHarness(t, { model = "m", dimensions = 4, maxEmbeddingChars = 8000, logger = null } = {}) {
+async function makeHarness(t, { model = "m", dimensions = 4, maxEmbeddingChars = 8000, logger = null, searchService = null } = {}) {
   const home = await makeTempDir("dsh-browse-test-");
   const configStore = {
     home,
@@ -76,8 +78,65 @@ async function makeHarness(t, { model = "m", dimensions = 4, maxEmbeddingChars =
     db.close();
     await cleanupTempDir(home);
   });
-  const service = createBrowseService({ home, db, configStore, memoryStore, logger });
+  const service = createBrowseService({ home, db, configStore, memoryStore, logger, searchService });
   return { home, db, configStore, memoryStore, service };
+}
+
+/** Build a fake manual search engine echoing DB-shaped candidates. */
+function makeFakeSearchService({ results = [], stats = {}, error = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async search({ query, scope, kinds, limit }) {
+      calls.push({ query, scope, kinds, limit });
+      if (error) throw error;
+      return {
+        query,
+        results,
+        stats: {
+          scope,
+          kinds,
+          model: "m",
+          dim: 4,
+          candidateCount: results.length,
+          returned: results.length,
+          reranked: false,
+          rerankError: null,
+          latencyMs: 1,
+          ...stats,
+        },
+      };
+    },
+  };
+}
+
+/** Build a DB-shaped search candidate, as `db.searchCandidates` returns after ranking. */
+function sampleCandidate({
+  pairId,
+  recordType = "pair",
+  userText = "user text",
+  assistantText = "assistant text",
+  score = 0.8,
+  cosineScore = 0.9,
+  ...rest
+}) {
+  return {
+    pairId,
+    sessionId: "s1",
+    cwd: "/w",
+    turn: 0,
+    createdAt: 1_700_000_000_000,
+    userText,
+    assistantText,
+    recordType,
+    memoryType: recordType === "memory" ? "workspace" : null,
+    name: recordType === "memory" ? `memory-${pairId}` : "",
+    description: recordType === "memory" ? "note" : "",
+    vector: new Float32Array([1, 2, 3, 4]),
+    score,
+    cosineScore,
+    ...rest,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -639,4 +698,140 @@ test("browse: a failing row inspection fails open as unknown with a warning", as
   assert.equal(check.checked.total, 1);
   assert.equal(check.mismatches.length, 1);
   assert.equal(check.mismatches[0].status.state, "unknown");
+});
+
+// ---------------------------------------------------------------------------
+// search()
+// ---------------------------------------------------------------------------
+
+test("browse: search returns shaped memory+pair items without engine metadata leakage", async (t) => {
+  const { home, db, configStore, memoryStore } = await makeHarness(t);
+  const cwd = "/w";
+  const f = pairFilePath({ home, cwd, sessionId: "s1" });
+  await appendPair(f, samplePairRecord("p1", { cwd, sessionId: "s1", user: "x".repeat(250), assistant: "hidden reply" }));
+  const written = memoryStore.write({ type: "workspace", cwd, name: "m1", description: "note", content: "secret memory content" });
+  const searchService = makeFakeSearchService({
+    results: [
+      sampleCandidate({ pairId: written.record.pairId, recordType: "memory", score: 0.85, cosineScore: 0.9 }),
+      sampleCandidate({ pairId: "p1", userText: "x".repeat(250), assistantText: "hidden reply", score: 0.7, cosineScore: 0.8 }),
+    ],
+    stats: { reranked: true, candidateCount: 2, model: "other-model" },
+  });
+  const service = createBrowseService({ home, db, configStore, memoryStore, searchService });
+
+  const result = await service.search({ query: "hello", scope: { type: "all" }, limit: 10 });
+  assert.equal(result.query, "hello");
+  assert.deepEqual(result.scope, { type: "all", cwd: null });
+  assert.equal(result.limit, 10);
+  assert.equal(result.results.length, 2);
+
+  const [mem, pair] = result.results;
+  assert.equal(mem.kind, "memory");
+  assert.equal(mem.pairId, written.record.pairId);
+  assert.equal(mem.name, "m1");
+  assert.equal(mem.description, "note");
+  assert.equal(mem.memoryType, "workspace");
+  assert.equal(mem.cwd, cwd);
+  assert.equal(mem.createdAt, written.record.createdAt);
+  assert.equal(mem.score, 0.85);
+  assert.equal(mem.cosineScore, 0.9);
+  assert.equal(mem.reranked, true);
+  assert.equal(mem.status.state, "missing");
+
+  assert.equal(pair.kind, "pair");
+  assert.equal(pair.pairId, "p1");
+  assert.equal(pair.sessionId, "s1");
+  assert.equal(pair.cwd, cwd);
+  assert.equal(pair.turn, 0);
+  assert.equal(pair.createdAt, 1_700_000_000_000);
+  assert.equal(pair.preview.length, 200, "the pair preview must be capped at 200 chars");
+  assert.ok(!pair.preview.includes("hidden reply"), "the assistant text must never leak into the preview");
+  assert.equal(pair.score, 0.7);
+  assert.equal(pair.cosineScore, 0.8);
+  assert.equal(pair.reranked, true);
+  assert.equal(pair.status.state, "missing");
+
+  // The engine's raw fields must never reach the client.
+  for (const item of result.results) {
+    assert.equal("vector" in item, false, "raw vectors must not leak");
+    assert.equal("userText" in item, false, "engine userText must not leak");
+    assert.equal("assistantText" in item, false, "engine assistantText must not leak");
+    assert.equal("content" in item, false, "memory content must not leak");
+  }
+
+  // The engine's score-descending order is preserved.
+  assert.deepEqual(result.results.map((i) => i.pairId), [written.record.pairId, "p1"]);
+});
+
+test("browse: search drops orphaned index hits and counts them in stats.excludedOrphan", async (t) => {
+  const { home, db, configStore, memoryStore } = await makeHarness(t);
+  const cwd = "/w";
+  const f = pairFilePath({ home, cwd, sessionId: "s1" });
+  await appendPair(f, samplePairRecord("p1", { cwd, sessionId: "s1", user: "u", assistant: "a" }));
+  const written = memoryStore.write({ type: "workspace", cwd, name: "m1", description: "d", content: "c" });
+  const searchService = makeFakeSearchService({
+    results: [
+      sampleCandidate({ pairId: "p1", score: 0.9 }),
+      sampleCandidate({ pairId: "ghost-pair", score: 0.8 }),
+      sampleCandidate({ pairId: written.record.pairId, recordType: "memory", score: 0.7 }),
+      sampleCandidate({ pairId: "memory:global:global:ghost-mem", recordType: "memory", memoryType: "global", score: 0.6 }),
+    ],
+  });
+  const service = createBrowseService({ home, db, configStore, memoryStore, searchService });
+
+  const result = await service.search({ query: "q", scope: { type: "all" }, limit: 20 });
+  assert.deepEqual(result.results.map((i) => i.pairId), ["p1", written.record.pairId]);
+  assert.equal(result.stats.excludedOrphan, 2);
+  assert.equal(result.stats.returned, 2);
+});
+
+test("browse: search merges engine stats with returned/excludedOrphan/malformedLines", async (t) => {
+  const { home, service } = await makeHarness(t, {
+    searchService: makeFakeSearchService({
+      results: [sampleCandidate({ pairId: "p1", score: 0.9 }), sampleCandidate({ pairId: "ghost", score: 0.8 })],
+      stats: { model: "m2", dim: 8, candidateCount: 7, latencyMs: 42, reranked: false },
+    }),
+  });
+  const cwd = "/w";
+  const f = pairFilePath({ home, cwd, sessionId: "s1" });
+  await appendPair(f, samplePairRecord("p1", { cwd, sessionId: "s1", user: "u", assistant: "a" }));
+  await writeFile(f, (await readFile(f, "utf8")) + "{not json\n");
+
+  const result = await service.search({ query: "q", scope: { type: "all" }, limit: 20 });
+  assert.equal(result.stats.model, "m2");
+  assert.equal(result.stats.dim, 8);
+  assert.equal(result.stats.candidateCount, 7);
+  assert.equal(result.stats.latencyMs, 42);
+  assert.equal(result.stats.returned, 1);
+  assert.equal(result.stats.excludedOrphan, 1);
+  assert.equal(result.stats.malformedLines, 1);
+});
+
+test("browse: search normalizes the scope and forwards kinds/limit to the engine", async (t) => {
+  const searchService = makeFakeSearchService({});
+  const { service } = await makeHarness(t, { searchService });
+
+  await service.search({ query: "q", scope: { type: "workspace", cwd: "/w" }, limit: 5 });
+  assert.deepEqual(searchService.calls[0].scope, { type: "workspace", cwd: "/w" });
+  assert.deepEqual(searchService.calls[0].kinds, ["memory", "pair"]);
+  assert.equal(searchService.calls[0].limit, 5);
+  assert.equal(searchService.calls[0].query, "q");
+
+  await service.search({ query: "q", scope: { type: "all" } });
+  assert.deepEqual(searchService.calls[1].scope, { type: "all", cwd: null }, "all scope normalizes cwd to null");
+  assert.equal(searchService.calls[1].limit, undefined);
+
+  const result = await service.search({ query: "q", scope: { type: "global" } });
+  assert.deepEqual(result.scope, { type: "global", cwd: "" });
+  assert.deepEqual(searchService.calls[2].scope, { type: "global", cwd: "" });
+});
+
+test("browse: search answers NOT_READY 503 when no search service is configured", async (t) => {
+  const { service } = await makeHarness(t); // no searchService.
+  await assert.rejects(service.search({ query: "q", scope: { type: "all" }, limit: 10 }), (err) =>
+    err.code === "NOT_READY" && err.status === 503 && err.message === "Search service is not available");
+
+  const { service: broken } = await makeHarness(t, { searchService: {} }); // search is not a function.
+  await assert.rejects(broken.search({ query: "q", scope: { type: "all" } }), (err) =>
+    err.code === "NOT_READY" && err.status === 503);
 });

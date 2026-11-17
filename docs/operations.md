@@ -96,7 +96,9 @@ re-embed resolves the mismatch.
 
 The Browse tab on the configuration page (see
 [configuration-page.md](configuration-page.md#browse)) inspects and repairs the
-index on demand.
+index on demand. Its **manual search** is read-only like the rest of the tab:
+hits are re-resolved against the authoritative JSONL/Markdown sources, orphaned
+index rows are dropped from the results, and nothing is rewritten.
 
 - **When to run**: open the Browse tab, pick a scope, and click **Check
   index**. Run it whenever the status strip shows pending or error counts,

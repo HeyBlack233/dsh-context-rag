@@ -1036,3 +1036,122 @@ test("db: setEmbedding without an expected hash keeps the legacy behavior", asyn
   assert.equal(db.setEmbedding("p2", vector([5]), { model: "m", dim: 1, expectedTextHash: "" }), true);
   assert.deepEqual([...db.getPair("p2").vector], [5]);
 });
+
+// ---------------------------------------------------------------------------
+// searchCandidates: manual-search candidate query.
+// ---------------------------------------------------------------------------
+
+test("db: searchCandidates merges kinds by scope with recall memory semantics", async (t) => {
+  const { db } = await makeDb(t);
+  const now = 1_700_000_000_000;
+  db.upsertPair(samplePair({ pairId: "p1", cwd: "/w1", turn: 0, createdAt: now }));
+  db.upsertPair(samplePair({ pairId: "p2", cwd: "/w2", turn: 0, createdAt: now + 100 }));
+  db.upsertMemory(sampleMemory({ pairId: "m-w1", memoryType: "workspace", cwd: "/w1", name: "W1", createdAt: now + 200 }));
+  db.upsertMemory(sampleMemory({ pairId: "m-w2", memoryType: "workspace", cwd: "/w2", name: "W2", createdAt: now + 300 }));
+  db.upsertMemory(sampleMemory({ pairId: "m-global", memoryType: "global", cwd: "", name: "G", createdAt: now + 400 }));
+  for (const pairId of ["p1", "p2", "m-w1", "m-w2", "m-global"]) {
+    db.setEmbedding(pairId, vector([1, 2, 3]), { model: "m1", dim: 3 });
+  }
+
+  // all: every memory and every pair, newest first across both kinds.
+  const all = db.searchCandidates({ scope: { type: "all" }, kinds: ["memory", "pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(all.map((c) => c.pairId), ["m-global", "m-w2", "m-w1", "p2", "p1"]);
+
+  // kinds select one family at a time.
+  const memories = db.searchCandidates({ scope: { type: "all" }, kinds: ["memory"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(memories.map((c) => c.pairId), ["m-global", "m-w2", "m-w1"]);
+  const pairs = db.searchCandidates({ scope: { type: "all" }, kinds: ["pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(pairs.map((c) => c.pairId), ["p2", "p1"]);
+
+  // global scope: global memories only; pairs never appear.
+  const global = db.searchCandidates({ scope: { type: "global" }, kinds: ["memory", "pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(global.map((c) => c.pairId), ["m-global"]);
+  const globalPairs = db.searchCandidates({ scope: { type: "global" }, kinds: ["pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(globalPairs, []);
+
+  // workspace scope from /w1: the /w1 pair, the /w1 memory, and the global
+  // memory; the /w2 rows stay out.
+  const ws = db.searchCandidates({ scope: { type: "workspace", cwd: "/w1" }, kinds: ["memory", "pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(ws.map((c) => c.pairId), ["m-global", "m-w1", "p1"]);
+  const wsMem = db.searchCandidates({ scope: { type: "workspace", cwd: "/w1" }, kinds: ["memory"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(wsMem.map((c) => c.pairId), ["m-global", "m-w1"]);
+  const wsPairs = db.searchCandidates({ scope: { type: "workspace", cwd: "/w1" }, kinds: ["pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(wsPairs.map((c) => c.pairId), ["p1"]);
+});
+
+test("db: searchCandidates returns the same object shape as candidates", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1", sessionId: "session-1", cwd: "/w1", turn: 3 }));
+  db.setEmbedding("p1", vector([4, 5, 6]), { model: "m1", dim: 3 });
+
+  const rows = db.searchCandidates({ scope: { type: "all" }, kinds: ["pair"], model: "m1", dim: 3, limit: 10 });
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.pairId, "p1");
+  assert.equal(row.sessionId, "session-1");
+  assert.equal(row.cwd, "/w1");
+  assert.equal(row.turn, 3);
+  assert.equal(row.createdAt, 1_700_000_000_000);
+  assert.equal(row.userText, "What is the build command?");
+  assert.equal(row.assistantText, "Run `npm run build`.");
+  assert.equal(row.recordType, "pair");
+  assert.equal(row.memoryType, null);
+  assert.equal(row.name, "");
+  assert.equal(row.description, "");
+  assert.deepEqual([...row.vector], [4, 5, 6]);
+});
+
+test("db: searchCandidates filters by model and dim and skips unindexed rows", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "a", cwd: "/w1" }));
+  db.upsertPair(samplePair({ pairId: "b", cwd: "/w1", turn: 1 }));
+  db.upsertPair(samplePair({ pairId: "unindexed", cwd: "/w1", turn: 2 }));
+  db.setEmbedding("a", vector([1, 2, 3]), { model: "m1", dim: 3 });
+  db.setEmbedding("b", vector([4, 5, 6]), { model: "m2", dim: 3 });
+
+  const m1 = db.searchCandidates({ scope: { type: "workspace", cwd: "/w1" }, kinds: ["pair"], model: "m1", dim: 3, limit: 10 });
+  assert.deepEqual(m1.map((c) => c.pairId), ["a"]);
+  const m2 = db.searchCandidates({ scope: { type: "workspace", cwd: "/w1" }, kinds: ["pair"], model: "m2", dim: 3, limit: 10 });
+  assert.deepEqual(m2.map((c) => c.pairId), ["b"]);
+  const wrongDim = db.searchCandidates({ scope: { type: "workspace", cwd: "/w1" }, kinds: ["pair"], model: "m1", dim: 4, limit: 10 });
+  assert.deepEqual(wrongDim, []);
+});
+
+test("db: searchCandidates honors the limit and defaults it to 10", async (t) => {
+  const { db } = await makeDb(t);
+  for (let i = 0; i < 12; i += 1) {
+    db.upsertPair(samplePair({ pairId: `p${i}`, cwd: "/w1", turn: i, createdAt: i }));
+  }
+  for (let i = 0; i < 12; i += 1) {
+    db.setEmbedding(`p${i}`, vector([1]), { model: "m1", dim: 1 });
+  }
+
+  const limited = db.searchCandidates({ scope: { type: "all" }, kinds: ["pair"], model: "m1", dim: 1, limit: 3 });
+  assert.deepEqual(limited.map((c) => c.pairId), ["p11", "p10", "p9"]);
+  const def = db.searchCandidates({ scope: { type: "all" }, kinds: ["pair"], model: "m1", dim: 1 });
+  assert.equal(def.length, 10);
+});
+
+test("db: searchCandidates validates scope, kinds, model, dim, and limit", async (t) => {
+  const { db } = await makeDb(t);
+  const base = { kinds: ["pair"], model: "m1", dim: 3 };
+
+  assert.throws(() => db.searchCandidates({ ...base, scope: null }), TypeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: "all" }), TypeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "other" } }), TypeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "workspace" } }), TypeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "workspace", cwd: "" } }), TypeError);
+
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "all" }, kinds: [] }), TypeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "all" }, kinds: ["bad"] }), TypeError);
+  assert.throws(() => db.searchCandidates({ scope: { type: "all" }, model: "m1", dim: 3 }), TypeError);
+
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "all" }, model: "" }), TypeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "all" }, dim: 0 }), RangeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "all" }, limit: 0 }), RangeError);
+  assert.throws(() => db.searchCandidates({ ...base, scope: { type: "all" }, limit: 2.5 }), RangeError);
+
+  // A valid workspace call still works alongside the invalid cases.
+  const ok = db.searchCandidates({ ...base, scope: { type: "workspace", cwd: "/w" } });
+  assert.deepEqual(ok, []);
+});

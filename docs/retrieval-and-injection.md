@@ -234,3 +234,50 @@ turn:
 - Context text exceeding `maxContextChars`.
 
 Retrieval is an enhancement, never a blocker.
+
+## Manual search (Browse)
+
+The **Browse** tab on the configuration page offers a manual search over
+stored memories and message pairs (see
+[configuration-page.md](configuration-page.md#browse)). It is a
+separate surface from injection but shares the **same cosine + optional rerank
+scoring stage** (`lib/ranking.js`) described in the
+[Pipeline](#pipeline) above, so the thresholds behave identically. The
+differences are:
+
+- **Gates.** Search requires only that embedding is enabled and
+  `embedding.model` + `embedding.baseUrl` are configured; it does **not**
+  require `retrieval.injectionEnabled` or the plugin `enabled` switch. It has
+  no session/turn context, so it applies **none** of the recall filters:
+  no same-session exclusion, no turn dedupe, and no `minMessageLength` gate.
+  Rerank is used only when `rerank.enabled` is on.
+- **Scope mapping.** The Browse scope maps onto the candidate scan: `All`
+  searches every pair and every memory (all workspaces); `Global` searches
+  global memories only (no pairs); `Workspace` searches that workspace's pairs
+  plus that workspace's memories **and** the global memories — the same memory
+  scope recall uses (see [Memory recall](#memory-recall)).
+- **Limits.** Search uses `scanLimit` for the database candidate scan and
+  reranks up to the requested `limit` (20 in the GUI), then applies the
+  configured `minScore` / `rerankMinScore`. It does **not** use
+  `candidateLimit`/`topK` — those remain injection-only — and there is no
+  `maxContextChars` budget (results are items, not rendered text).
+- **Eligibility.** Only index rows with the current embedding model/dim can be
+  scored; missing, pending, and model-mismatched entries simply do not appear.
+- **Error behavior.** Unlike recall's fail-open injection, search errors are
+  **surfaced** to the GUI with stable codes (for example
+  `EMBEDDING_NOT_CONFIGURED` when embedding is disabled or unconfigured). A
+  rerank failure falls back to the cosine-filtered results and reports a note
+  (`stats.rerankError`). The plugin's own log lines and generated error
+  messages never contain the query text; an upstream embedding/rerank
+  endpoint could still echo it in its own error response body, which the GUI
+  may surface.
+- **Source re-resolution.** Every engine hit is re-resolved against the
+  authoritative JSONL/Markdown sources before it is returned; orphaned index
+  rows (whose source is gone) are dropped (`stats.excludedOrphan`), and raw
+  vectors or full `userText`/`assistantText`/memory `content` are never
+  returned. Memory content stays available through the separate `browse.get`
+  detail action.
+
+The engine behind the Browse search is the reusable `lib/search.js` service
+(kept in `deps.search`), which is also the intended base for a future agent
+tool; **no agent tool is registered in this cycle**.
