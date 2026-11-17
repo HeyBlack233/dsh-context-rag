@@ -26,7 +26,7 @@ Release Date: TBD
 - Pre-step durable context injection: retrieved pairs are injected as a
   read-only context message shown in the Trajectory. The injected text is an
   HTML-like tagged structure (`<context-rag>`, `<notice>`, `<turn>`,
-  `<memory>`, `<user>`, `<assistant>`, `<content>`) with metadata in
+  `<memory>`, `<user>`, `<assistant>`) with metadata in
   attributes, entity-escaped content, and a fixed notice that the retrieved
   turns are reference material rather than a source of truth, replacing the
   previous plain `[n] … User:/Assistant:` layout.

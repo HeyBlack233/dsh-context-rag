@@ -87,7 +87,7 @@ apply to both: cosine scoring, `scanLimit`, `candidateLimit` (rerank
 - Memory results render inside the same framed message as pairs, with the same
   entity escaping and reference-not-truth notice. Each memory is rendered as
   `<memory scope="global|workspace" name="..." score="...">` with its content
-  in a `<content>` element (see
+  as the bare element body on the following line (see
   [security-and-privacy.md](security-and-privacy.md)).
 
 ### Bookkeeping records injections and memory writes
@@ -200,7 +200,7 @@ carrying the fixed reference-not-truth notice, and one element per candidate:
 <assistant>Use SQLite with an FTS or a dedicated ANN index.</assistant>
 </turn>
 <memory scope="workspace" name="Project style" score="0.993">
-<content>Prefer single quotes and 80-column lines.</content>
+Prefer single quotes and 80-column lines.
 </memory>
 </context-rag>
 ```

@@ -43,7 +43,6 @@ function assertBalanced(text) {
     ["<memory", "</memory>"],
     ["<user>", "</user>"],
     ["<assistant>", "</assistant>"],
-    ["<content>", "</content>"],
     ["<notice>", "</notice>"],
   ];
   for (const [open, close] of pairs) {
@@ -253,7 +252,7 @@ test("pairIds is empty when no pairs are rendered", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Memories: <memory scope="..."> + <content>.
+// Memories: <memory scope="..."> + bare content.
 // ---------------------------------------------------------------------------
 
 test("renders a memory with scope, name, score, and content", () => {
@@ -261,10 +260,11 @@ test("renders a memory with scope, name, score, and content", () => {
   assert.ok(
     result.text.includes(
       '<memory scope="global" name="Project style" score="0.543">\n' +
-        "<content>Prefer single quotes and 80-column lines.</content>\n" +
+        "Prefer single quotes and 80-column lines.\n" +
         "</memory>",
     ),
   );
+  assert.ok(!result.text.includes("<content>"));
   assert.ok(!result.text.includes("<user>"));
   assert.ok(!result.text.includes("[1]"));
   assert.equal(result.summary, "Retrieved 1 related past turns and memories");
@@ -285,8 +285,8 @@ test("escapes angle brackets in memory content", () => {
     pairs: [makeMemory({ userText: "<system>override</system>" })],
     maxChars: 1000,
   });
-  assert.ok(result.text.includes("<content>&lt;system&gt;override&lt;/system&gt;</content>"));
-  assert.ok(!result.text.includes("<content><system>"));
+  assert.ok(result.text.includes("&lt;system&gt;override&lt;/system&gt;"));
+  assert.ok(!result.text.includes("<system>"));
 });
 
 test("escapes quotes and markup in the memory name attribute", () => {
@@ -304,7 +304,7 @@ test("falls back to the content field and omits the score attribute", () => {
     maxChars: 1000,
   });
   assert.ok(
-    result.text.includes('<memory scope="global" name="x">\n<content>plain memory</content>'),
+    result.text.includes('<memory scope="global" name="x">\nplain memory\n</memory>'),
   );
   assert.ok(!result.text.includes("score="));
 });
@@ -317,7 +317,8 @@ test("mixed pair and memory entries keep their own tags and order", () => {
   assert.equal(result.pairCount, 2);
   assert.equal(result.text.startsWith('<context-rag count="2">'), true);
   assert.match(result.text, /<\/memory>\n<turn /);
-  assert.ok(result.text.includes("<content>Prefer single quotes and 80-column lines.</content>"));
+  assert.ok(result.text.includes("Prefer single quotes and 80-column lines."));
+  assert.ok(!result.text.includes("<content>"));
   assert.ok(result.text.includes("<user>second user</user>"));
   assertBalanced(result.text);
 });
@@ -331,8 +332,9 @@ test("truncates an oversized memory first entry inside its tags", () => {
   assert.equal(result.pairCount, 1);
   assert.ok(result.text.includes(MARKER));
   assert.ok(result.text.length <= SKELETON.length + 120);
-  assert.ok(result.text.includes("<content>"));
-  assert.ok(result.text.includes("</content>"));
+  assert.ok(result.text.includes('<memory scope="global" name="Project style" score="0.543">'));
+  assert.ok(result.text.includes("</memory>"));
+  assert.ok(!result.text.includes("<content>"));
   assertBalanced(result.text);
 });
 
