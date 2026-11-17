@@ -92,6 +92,48 @@ embedding model or `dimensions`:
 Deleting `index.sqlite` (or clearing via the page) and letting the worker
 re-embed resolves the mismatch.
 
+## Index consistency check and repair
+
+The Browse tab on the configuration page (see
+[configuration-page.md](configuration-page.md#browse)) inspects and repairs the
+index on demand.
+
+- **When to run**: open the Browse tab, pick a scope, and click **Check
+  index**. Run it whenever the status strip shows pending or error counts,
+  after an embedding model/dimension change, after `index.clear` /
+  `index.rebuild`, after manually editing the JSONL or memory files, or any
+  time you want to verify that the index matches the sources. There is
+  **no automatic or periodic audit** — a check only runs when you click.
+- **What the states mean**: each entry reports one of `consistent`, `missing`,
+  `stale-text`, `pending`, `model-mismatch`, `corrupt`, `orphan`, or `unknown`
+  (fail-open), with the precedence documented in
+  [storage-and-data-model.md](storage-and-data-model.md#index-consistency-states).
+  Orphans (index rows with no source) are **reported only**: Browse never
+  removes them, and the next indexer reconcile pass (startup, or after
+  `config.save`) deletes orphan rows automatically.
+- **Per-entry re-index**: select a non-consistent, non-orphan entry and click
+  **Re-index**. The entry's source is re-read fresh and embedded
+  **synchronously** through the configured embedding endpoint (one request,
+  using the same text building/truncation as the background worker). On
+  success the row's model/dim/indexed-at are updated and the status refreshes.
+  Re-index is **disabled while no embedding model is configured** (and while
+  embedding is disabled). On failure the entry **stays queued in the outbox**
+  with backoff for the background worker to retry: the page reports
+  `EMBEDDING_FAILED` with `{queued: true}` and keeps the outbox rows (reason,
+  attempts, last error) visible in the detail.
+- **Text-change CAS**: the new vector is stored under a compare-and-swap guard
+  on the source text hash. If the source text changes while the embedding
+  request is in flight, the stale vector is **not** written (`TEXT_CHANGED`,
+  409) and the outbox entry is left in place, so the background worker (or a
+  fresh re-index) indexes the newer text.
+- **Forget memory from Browse**: the **Forget** button (two-click
+  confirmation) has the same semantics as `memory_forget`: `<name>.md` is
+  renamed to `<name>.forgotten` (history preserved on disk), the `MEMORY.md`
+  index is rebuilt, the SQLite index row and its outbox entry are deleted, and
+  the memory's recall-state entries are cleared. If a `.forgotten` file
+  already exists the request fails with `FORGOTTEN_CONFLICT` rather than
+  overwriting history; nothing is hard-deleted.
+
 ## Outbox retry behavior and error inspection
 
 Pairs awaiting embedding sit in the SQLite `outbox`. The background worker

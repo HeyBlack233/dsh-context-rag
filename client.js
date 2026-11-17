@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
     // Tab ids are shared by the tab buttons and their panels for aria links.
     const tabDomId = (id) => "dscr-tab-" + id;
     const panelDomId = (id) => "dscr-panel-" + id;
-    const TAB_IDS = ["dashboard", "configuration", "logs"];
+    const TAB_IDS = ["dashboard", "browse", "configuration", "logs"];
     const TAB_STORAGE_KEY = "dsh-context-rag:tab";
 
     function storedTab() {
@@ -81,6 +81,76 @@ window.__ModuleLoader__.load({
         unit += 1;
       }
       return (unit === 0 ? String(size) : size.toFixed(1)) + " " + t(units[unit]);
+    }
+
+    // ------------------------------------------------------------------
+    // Browse tab helpers (pure; no React state)
+    // ------------------------------------------------------------------
+
+    const BROWSE_PAGE_SIZE = 20;
+
+    function browseBasename(path) {
+      if (!path) return "";
+      const parts = String(path).split(/[\\/]/);
+      return parts[parts.length - 1] || "";
+    }
+
+    // Pair createdAt is an ISO string; memory createdAt is epoch milliseconds.
+    function browseDate(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const ms = typeof value === "number" ? value : Date.parse(value);
+      if (!Number.isFinite(ms)) return String(value);
+      return new Date(ms).toLocaleString();
+    }
+
+    function sameBrowseScope(a, b) {
+      return !!a && !!b && a.type === b.type && (a.cwd || "") === (b.cwd || "");
+    }
+
+    // Item status states use dashed names; check counts use camelCase names.
+    function statusKey(state) {
+      switch (state) {
+        case "consistent": return "statusConsistent";
+        case "missing": return "statusMissing";
+        case "stale-text": return "statusStale";
+        case "pending": return "statusPending";
+        case "model-mismatch": return "statusModel";
+        case "corrupt": return "statusCorrupt";
+        case "orphan": return "statusOrphan";
+        default: return "statusUnknown";
+      }
+    }
+
+    function countStatusKey(key) {
+      switch (key) {
+        case "consistent": return "statusConsistent";
+        case "missing": return "statusMissing";
+        case "staleText": return "statusStale";
+        case "pending": return "statusPending";
+        case "modelMismatch": return "statusModel";
+        case "corrupt": return "statusCorrupt";
+        case "orphan": return "statusOrphan";
+        default: return "statusUnknown";
+      }
+    }
+
+    function statusClass(state) {
+      return "dscr-browse-pill" + (state ? " dscr-browse-pill-" + state : " dscr-browse-pill-unknown");
+    }
+
+    // Global scope is memories-only; pairing with it falls back to "all".
+    function fixupBrowseScope(scope, scopes, kind) {
+      const current = scope || { type: "all" };
+      if (kind === "pairs" && current.type === "global") return { type: "all" };
+      if (current.type === "workspace") {
+        const known = (scopes || []).some((s) => s.type === "workspace" && s.cwd === current.cwd);
+        if (!known) return { type: "all" };
+      }
+      return current;
+    }
+
+    function scopeSelectValue(scope) {
+      return scope && scope.type === "workspace" ? "workspace:" + (scope.cwd || "") : (scope && scope.type) || "all";
     }
 
     // Accessible tab bar: arrow keys, Home, and End move and activate tabs.
@@ -147,6 +217,34 @@ window.__ModuleLoader__.load({
       // Bumped around logs.configure so a poll that started before (or during)
       // the request cannot overwrite the freshly applied settings.
       const logEpochRef = React.useRef(0);
+
+      // Browse tab state. Loaded lazily only while the Browse tab is active;
+      // nothing polls while it is hidden. browseList holds the last
+      // browse.list response (paged view); browseCheck holds the last
+      // successful browse.check for the current scope and is invalidated on
+      // scope/mode change; browseOnlyMismatch swaps the list for the check's
+      // mismatches.
+      const [browseKind, setBrowseKind] = React.useState("memories");
+      const [browseScopes, setBrowseScopes] = React.useState([]);
+      const [browseScope, setBrowseScope] = React.useState({ type: "all" });
+      const [browseList, setBrowseList] = React.useState(null);
+      const [browseLoading, setBrowseLoading] = React.useState(false);
+      const [browseError, setBrowseError] = React.useState("");
+      const [browseSelected, setBrowseSelected] = React.useState(null);
+      const [browseDetail, setBrowseDetail] = React.useState(null);
+      const [browseDetailLoading, setBrowseDetailLoading] = React.useState(false);
+      const [browseDetailError, setBrowseDetailError] = React.useState("");
+      const [browseCheck, setBrowseCheck] = React.useState(null);
+      const [browseChecking, setBrowseChecking] = React.useState(false);
+      const [browseOnlyMismatch, setBrowseOnlyMismatch] = React.useState(false);
+      const [browseBusy, setBrowseBusy] = React.useState("");
+      const [browseBanner, setBrowseBanner] = React.useState(null);
+      const [browseConfirmForget, setBrowseConfirmForget] = React.useState(false);
+      // Monotonic epochs invalidate in-flight list loads, checks, and detail
+      // fetches after a scope/mode switch, so a stale response can never
+      // overwrite newer state.
+      const browseEpochRef = React.useRef(0);
+      const browseDetailEpochRef = React.useRef(0);
 
       const parsedConfig = () => {
         try { return JSON.parse(configText) || {}; } catch { return null; }
@@ -294,8 +392,10 @@ window.__ModuleLoader__.load({
       const dirty = configText !== savedText;
       const selectTab = (id) => {
         if (id === activeTab) return;
-        // Leaving Dashboard disarms the two-click clear confirmation.
+        // Leaving Dashboard disarms the two-click clear confirmation; leaving
+        // Browse disarms the two-click forget confirmation.
         if (activeTab === "dashboard") setConfirmClear(false);
+        if (activeTab === "browse") setBrowseConfirmForget(false);
         setActiveTab(id);
         rememberTab(id);
       };
@@ -437,6 +537,261 @@ window.__ModuleLoader__.load({
           setBanner({ kind: "error", text: err.message });
         } finally {
           setLogBusy("");
+        }
+      };
+
+      // ------------------------------------------------------------------
+      // Browse tab: data loading, check index, re-index, forget
+      // ------------------------------------------------------------------
+
+      const loadBrowseList = async (scope, kind, offset) => {
+        return call("browse.list", { kind, scope, offset, limit: BROWSE_PAGE_SIZE });
+      };
+
+      // Fetches one browse.list page and merges it into browseList. offset 0
+      // replaces the list; offset > 0 appends (Load more). Responses that are
+      // stale (a scope/mode switch happened meanwhile) are dropped.
+      const reloadBrowse = async (scope, kind, offset = 0) => {
+        const epoch = ++browseEpochRef.current;
+        setBrowseLoading(true);
+        setBrowseError("");
+        try {
+          const value = await loadBrowseList(scope, kind, offset);
+          if (epoch !== browseEpochRef.current) return null;
+          setBrowseList((prev) =>
+            offset === 0 || !prev
+              ? value
+              : { ...value, items: [...prev.items, ...value.items] },
+          );
+          return value;
+        } catch (err) {
+          if (epoch !== browseEpochRef.current) return null;
+          setBrowseError(err.message);
+          return null;
+        } finally {
+          if (epoch === browseEpochRef.current) setBrowseLoading(false);
+        }
+      };
+
+      // Lazy load on first entry: scopes first, then the list for the current
+      // kind/scope. Runs every time the Browse tab becomes active, never while
+      // it is hidden, and never on a timer.
+      React.useEffect(() => {
+        if (activeTab !== "browse") return;
+        let alive = true;
+        setBrowseLoading(true);
+        setBrowseError("");
+        (async () => {
+          try {
+            const scopesValue = await call("browse.scopes");
+            if (!alive) return;
+            const scopes = Array.isArray(scopesValue && scopesValue.scopes) ? scopesValue.scopes : [];
+            setBrowseScopes(scopes);
+            const scope = fixupBrowseScope(browseScope, scopes, browseKind);
+            if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
+            await reloadBrowse(scope, browseKind, 0);
+          } catch (err) {
+            if (alive) setBrowseError(err.message);
+          } finally {
+            if (alive) setBrowseLoading(false);
+          }
+        })();
+        return () => { alive = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [activeTab]);
+
+      // Mode switch: clear selection, invalidate the check result, keep the
+      // scope if it is still valid for the new kind (global is memories-only,
+      // so pairs fall back to "all"), reload the list.
+      const switchBrowseKind = (kind) => {
+        if (kind === browseKind) return;
+        setBrowseKind(kind);
+        setBrowseSelected(null);
+        setBrowseDetail(null);
+        setBrowseDetailError("");
+        setBrowseCheck(null);
+        setBrowseOnlyMismatch(false);
+        setBrowseConfirmForget(false);
+        setBrowseList(null);
+        const scope = fixupBrowseScope(browseScope, browseScopes, kind);
+        if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
+        reloadBrowse(scope, kind, 0);
+      };
+
+      // Scope change: clear selection and the check result, reload the list.
+      const changeBrowseScope = (scope) => {
+        if (sameBrowseScope(scope, browseScope)) return;
+        setBrowseScope(scope);
+        setBrowseSelected(null);
+        setBrowseDetail(null);
+        setBrowseDetailError("");
+        setBrowseCheck(null);
+        setBrowseOnlyMismatch(false);
+        setBrowseConfirmForget(false);
+        setBrowseList(null);
+        reloadBrowse(scope, browseKind, 0);
+      };
+
+      const loadMoreBrowse = () => {
+        if (!browseList) return;
+        reloadBrowse(browseScope, browseKind, browseList.items.length);
+      };
+
+      // Refresh: reload scopes + list (and the detail when a row is selected).
+      // A manual refresh invalidates the last audit, so the check result and
+      // the "only mismatched" filter are reset and the reader can re-run the
+      // check. The selection survives only while its pairId is still listed
+      // on the refreshed first page.
+      const refreshBrowse = async () => {
+        const epoch = ++browseEpochRef.current;
+        setBrowseLoading(true);
+        setBrowseError("");
+        setBrowseBanner(null);
+        try {
+          const scopesValue = await call("browse.scopes");
+          if (epoch !== browseEpochRef.current) return;
+          const scopes = Array.isArray(scopesValue && scopesValue.scopes) ? scopesValue.scopes : [];
+          setBrowseScopes(scopes);
+          const scope = fixupBrowseScope(browseScope, scopes, browseKind);
+          if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
+          setBrowseCheck(null);
+          setBrowseOnlyMismatch(false);
+          const value = await loadBrowseList(scope, browseKind, 0);
+          if (epoch !== browseEpochRef.current) return;
+          setBrowseList(value);
+          if (browseSelected) {
+            if (Array.isArray(value.items) && value.items.some((item) => item.pairId === browseSelected)) {
+              await refreshSelectedDetail(browseSelected);
+            } else {
+              setBrowseSelected(null);
+              setBrowseDetail(null);
+              setBrowseDetailError("");
+            }
+          }
+        } catch (err) {
+          if (epoch !== browseEpochRef.current) return;
+          setBrowseError(err.message);
+        } finally {
+          if (epoch === browseEpochRef.current) setBrowseLoading(false);
+        }
+      };
+
+      const refreshSelectedDetail = async (pairId) => {
+        const epoch = browseDetailEpochRef.current;
+        try {
+          const detail = await call("browse.get", { pairId });
+          if (epoch !== browseDetailEpochRef.current) return null;
+          setBrowseDetail(detail);
+          setBrowseDetailError("");
+          return detail;
+        } catch (err) {
+          if (epoch !== browseDetailEpochRef.current) return null;
+          setBrowseDetailError(err.message);
+          return null;
+        }
+      };
+
+      // Row click: fetch the detail. Orphan rows are never selectable.
+      const selectBrowseRow = async (item) => {
+        if (!item || (item.status && item.status.state === "orphan")) return;
+        const epoch = ++browseDetailEpochRef.current;
+        setBrowseSelected(item.pairId);
+        setBrowseConfirmForget(false);
+        setBrowseDetail(null);
+        setBrowseDetailError("");
+        setBrowseDetailLoading(true);
+        try {
+          const detail = await call("browse.get", { pairId: item.pairId });
+          if (epoch !== browseDetailEpochRef.current) return;
+          setBrowseDetail(detail);
+        } catch (err) {
+          if (epoch !== browseDetailEpochRef.current) return;
+          if (err.code === "NOT_FOUND") {
+            setBrowseDetailError(t("browseNotFound"));
+            reloadBrowse(browseScope, browseKind, 0);
+          } else {
+            setBrowseDetailError(err.message);
+          }
+        } finally {
+          if (epoch === browseDetailEpochRef.current) setBrowseDetailLoading(false);
+        }
+      };
+
+      const runBrowseCheck = async () => {
+        const epoch = browseEpochRef.current;
+        setBrowseChecking(true);
+        try {
+          const value = await call("browse.check", { scope: browseScope });
+          if (epoch !== browseEpochRef.current) return;
+          setBrowseCheck(value);
+        } catch (err) {
+          if (epoch !== browseEpochRef.current) return;
+          setBrowseBanner({ kind: "error", text: t("browseCheckError") + ": " + err.message });
+        } finally {
+          if (epoch === browseEpochRef.current) setBrowseChecking(false);
+        }
+      };
+
+      // Two-click confirmation; disarmed by leaving Browse or changing the
+      // selection/scope/mode. Sends the full memory identity so the backend
+      // can resolve the file even if the name collides across scopes.
+      const forgetMemory = async () => {
+        const detail = browseDetail;
+        if (!detail) return;
+        if (!browseConfirmForget) {
+          setBrowseConfirmForget(true);
+          return;
+        }
+        setBrowseConfirmForget(false);
+        setBrowseBusy("forget");
+        try {
+          await call("browse.forget", {
+            pairId: detail.pairId,
+            memoryType: detail.memoryType,
+            cwd: detail.cwd,
+            name: detail.name,
+            description: detail.description,
+          });
+          setBrowseBanner({ kind: "success", text: t("forgotten") });
+          setBrowseSelected(null);
+          setBrowseDetail(null);
+          const scopesValue = await call("browse.scopes");
+          const scopes = Array.isArray(scopesValue && scopesValue.scopes) ? scopesValue.scopes : [];
+          setBrowseScopes(scopes);
+          const scope = fixupBrowseScope(browseScope, scopes, browseKind);
+          if (!sameBrowseScope(scope, browseScope)) setBrowseScope(scope);
+          await reloadBrowse(scope, browseKind, 0);
+          // Keep the "only mismatched" view truthful after a repair.
+          if (browseOnlyMismatch) await runBrowseCheck();
+        } catch (err) {
+          setBrowseBanner({ kind: "error", text: err.message });
+        } finally {
+          setBrowseBusy("");
+        }
+      };
+
+      const reindexEntry = async () => {
+        const detail = browseDetail;
+        if (!detail) return;
+        setBrowseBusy("reindex");
+        try {
+          await call("browse.reindex", { pairId: detail.pairId });
+          const fresh = await refreshSelectedDetail(detail.pairId);
+          const state = fresh && fresh.status && fresh.status.state;
+          setBrowseBanner({ kind: "success", text: state === "pending" ? t("reindexQueued") : t("reindexDone") });
+          await reloadBrowse(browseScope, browseKind, 0);
+          // Keep the "only mismatched" view truthful after a repair.
+          if (browseOnlyMismatch) await runBrowseCheck();
+        } catch (err) {
+          setBrowseBanner({
+            kind: "error",
+            text: t("reindexFailed") + ": " + err.message,
+          });
+          // EMBEDDING_FAILED leaves the entry in the outbox: refetch the
+          // detail so the pending status and outbox rows are shown.
+          if (err.code === "EMBEDDING_FAILED") await refreshSelectedDetail(detail.pairId);
+        } finally {
+          setBrowseBusy("");
         }
       };
 
@@ -678,6 +1033,293 @@ window.__ModuleLoader__.load({
                 ...logEntries.map(logRow))),
       ];
 
+      // ------------------------------------------------------------------
+      // Browse tab render
+      // ------------------------------------------------------------------
+
+      // Counts for the mode buttons come from browse.scopes for the current
+      // scope ({memories, pairs}).
+      const scopeInfo = browseScopes.find((s) => sameBrowseScope(s, browseScope)) || { memories: 0, pairs: 0 };
+      const scopeLabelText = (s) => {
+        if (s.label) return s.label;
+        if (s.labelKey) {
+          const translated = t(s.labelKey);
+          if (translated && translated !== s.labelKey) return translated;
+        }
+        const name = browseBasename(s.cwd);
+        if (s.type === "workspace" && !name) return t("browseWorkspaceUnavailable");
+        return name;
+      };
+      const statusPill = (status) =>
+        el("span", { className: statusClass(status && status.state) }, t(statusKey(status && status.state)));
+      const memoryBadge = (memoryType) =>
+        el("span", { className: "dscr-browse-badge" },
+          memoryType === "global" ? t("globalLabel") : t("workspaceLabel"));
+
+      const memoryRow = (item) => {
+        const orphan = item.status && item.status.state === "orphan";
+        const selected = browseSelected === item.pairId;
+        return el("button", {
+          key: item.pairId,
+          className: "dscr-browse-row" + (selected ? " dscr-browse-row-selected" : ""),
+          type: "button",
+          disabled: orphan,
+          "aria-current": selected ? "true" : undefined,
+          onClick: () => selectBrowseRow(item),
+        },
+          el("span", { className: "dscr-browse-row-head" },
+            el("span", { className: "dscr-browse-row-main" }, item.name),
+            statusPill(item.status)),
+          el("span", { className: "dscr-browse-row-sub" },
+            memoryBadge(item.memoryType),
+            el("span", { className: "dscr-browse-row-desc" }, item.description || ""),
+            el("span", { className: "dscr-browse-row-date" }, browseDate(item.createdAt))));
+      };
+
+      const pairRow = (item) => {
+        const orphan = item.status && item.status.state === "orphan";
+        const selected = browseSelected === item.pairId;
+        const metaParts = [];
+        if (item.cwd) metaParts.push(browseBasename(item.cwd));
+        if (item.sessionId) metaParts.push(String(item.sessionId).slice(-8));
+        if (item.turn !== undefined && item.turn !== null) metaParts.push(t("browseMetaTurn") + " " + item.turn);
+        return el("button", {
+          key: item.pairId,
+          className: "dscr-browse-row" + (selected ? " dscr-browse-row-selected" : ""),
+          type: "button",
+          disabled: orphan,
+          "aria-current": selected ? "true" : undefined,
+          onClick: () => selectBrowseRow(item),
+        },
+          el("span", { className: "dscr-browse-row-head" },
+            el("span", { className: "dscr-browse-row-main" }, item.preview || ""),
+            statusPill(item.status)),
+          el("span", { className: "dscr-browse-row-sub" },
+            el("span", { className: "dscr-browse-row-meta" }, metaParts.join(" · ")),
+            el("span", { className: "dscr-browse-row-date" }, browseDate(item.createdAt))));
+      };
+
+      const visibleItems = browseOnlyMismatch && browseCheck
+        ? (Array.isArray(browseCheck.mismatches) ? browseCheck.mismatches : []).filter((item) => item.kind === browseKind)
+        : (browseList && Array.isArray(browseList.items) ? browseList.items : []);
+
+      const browseMore = !browseOnlyMismatch && browseList && browseList.items.length < browseList.total
+        ? el("button", {
+            key: "__browse-more",
+            className: "dscr-btn dscr-browse-more",
+            type: "button",
+            disabled: browseLoading || browseBusy !== "",
+            onClick: loadMoreBrowse,
+          }, t("browseLoadMore"))
+        : null;
+
+      const listBody = browseLoading && !browseList && !browseOnlyMismatch
+        ? el("p", { className: "dscr-browse-empty", role: "status" }, t("browseLoading"))
+        : browseError && !browseOnlyMismatch
+        ? el("p", { className: "dscr-browse-error", role: "status" }, t("browseLoadError") + ": " + browseError)
+        : visibleItems.length === 0
+        ? el("p", { className: "dscr-browse-empty" },
+            browseOnlyMismatch ? t("browseEmptyMismatch") : t(browseKind === "memories" ? "browseEmptyMemories" : "browseEmptyPairs"))
+        : el("div", { className: "dscr-browse-list-scroll", role: "list", "aria-label": t("browseListLabel"), tabIndex: 0 },
+            ...visibleItems.map(browseKind === "memories" ? memoryRow : pairRow),
+            browseMore);
+
+      const listPanel = el("div", { className: "dscr-browse-list", role: "region", "aria-label": t("browseListLabel") },
+        el("h3", { className: "dscr-browse-panel-title" }, t("browseListLabel")),
+        listBody);
+
+      const detailMetaRow = (label, value) =>
+        el("div", { className: "dscr-browse-meta-row" },
+          el("span", { className: "dscr-browse-meta-label" }, label),
+          el("span", { className: "dscr-browse-meta-value" }, value == null ? "" : value));
+
+      const outboxRow = (outbox) => {
+        const parts = [
+          t("browseMetaReason") + ": " + (outbox.reason || t("none")),
+          t("browseMetaAttempts") + ": " + (outbox.attempts ?? 0),
+        ];
+        if (outbox.lastError) parts.push(t("browseMetaLastError") + ": " + outbox.lastError);
+        return parts.join(" · ");
+      };
+
+      let detailBody;
+      if (browseDetailLoading) {
+        detailBody = el("p", { className: "dscr-browse-empty", role: "status" }, t("browseLoading"));
+      } else if (browseDetailError) {
+        detailBody = el("p", { className: "dscr-browse-error", role: "status" }, browseDetailError);
+      } else if (!browseSelected || !browseDetail) {
+        detailBody = el("p", { className: "dscr-browse-empty" }, t("browseSelectHint"));
+      } else {
+        const detail = browseDetail;
+        const isMemory = detail.kind === "memory";
+        const status = detail.status || {};
+        const metaRows = [
+          ...(isMemory
+            ? [
+                detailMetaRow(t("browseMetaName"), detail.name),
+                detailMetaRow(t("browseMetaDescription"), detail.description),
+                detailMetaRow(t("browseMetaType"), detail.memoryType === "global" ? t("globalLabel") : t("workspaceLabel")),
+                detailMetaRow(t("browseMetaCwd"), detail.cwd || t("none")),
+                detailMetaRow(t("browseMetaCreatedAt"), browseDate(detail.createdAt)),
+              ]
+            : [
+                detailMetaRow(t("browseMetaPairId"), detail.pairId),
+                detailMetaRow(t("browseMetaSessionId"), detail.sessionId),
+                detailMetaRow(t("browseMetaCwd"), detail.cwd),
+                detailMetaRow(t("browseMetaTurn"), detail.turn),
+                detailMetaRow(t("browseMetaCreatedAt"), browseDate(detail.createdAt)),
+              ]),
+          detailMetaRow(t("browseMetaStatus"), statusPill(status)),
+          ...(status.model !== undefined && status.model !== null ? [detailMetaRow(t("browseMetaModel"), status.model)] : []),
+          ...(status.dim !== undefined && status.dim !== null ? [detailMetaRow(t("browseMetaDim"), status.dim)] : []),
+          ...(status.indexedAt ? [detailMetaRow(t("browseMetaIndexedAt"), browseDate(status.indexedAt))] : []),
+          ...(status.state === "pending" && detail.outbox
+            ? [detailMetaRow(t("browseMetaOutbox"), outboxRow(detail.outbox))]
+            : []),
+        ];
+        const contentBlocks = isMemory
+          ? [
+              el("h3", { className: "dscr-browse-section" }, t("memoryContent")),
+              el("pre", { className: "dscr-browse-content" }, detail.content || ""),
+              detail.contentTruncated ? el("p", { className: "dscr-browse-note" }, t("contentTruncated")) : null,
+            ]
+          : [
+              el("h3", { className: "dscr-browse-section" }, t("userMessage")),
+              el("pre", { className: "dscr-browse-content" }, detail.user || ""),
+              detail.userTruncated ? el("p", { className: "dscr-browse-note" }, t("contentTruncated")) : null,
+              el("h3", { className: "dscr-browse-section" }, t("assistantMessage")),
+              el("pre", { className: "dscr-browse-content" }, detail.assistant || ""),
+              detail.assistantTruncated ? el("p", { className: "dscr-browse-note" }, t("contentTruncated")) : null,
+            ];
+        // Re-index applies to any non-consistent, non-orphan entry. Orphan
+        // rows are not selectable at all, so they never reach this point.
+        const canReindex = !(status.state === "consistent" || status.state === "orphan");
+        // Re-index needs an active embedding client: a configured model and
+        // the embedding switch enabled. Otherwise the backend answers
+        // EMBEDDING_DISABLED, so disable it up front with a hint.
+        const embeddingMissing = !embed.model || embed.enabled === false;
+        detailBody = el("div", { className: "dscr-browse-detail-body" },
+          el("div", { className: "dscr-browse-meta" }, ...metaRows),
+          el("div", { className: "dscr-browse-actions" },
+            isMemory
+              ? el("button", {
+                  className: "dscr-btn",
+                  type: "button",
+                  disabled: browseBusy !== "",
+                  onClick: forgetMemory,
+                }, t(browseConfirmForget ? "confirmForget" : "forget"))
+              : null,
+            canReindex
+              ? el("button", {
+                  className: "dscr-btn",
+                  type: "button",
+                  disabled: browseBusy !== "" || embeddingMissing,
+                  onClick: reindexEntry,
+                }, t("reindex"))
+              : null,
+            canReindex && embeddingMissing
+              ? el("span", { className: "dscr-browse-note" }, t("browseEmbeddingDisabled"))
+              : null),
+          ...contentBlocks);
+      }
+
+      const detailPanel = el("div", { className: "dscr-browse-detail", role: "region", "aria-label": t("browseDetailLabel") },
+        el("h3", { className: "dscr-browse-panel-title" }, t("browseDetailLabel")),
+        detailBody);
+
+      const checkMismatches = browseCheck
+        ? Object.entries(browseCheck.counts || {}).filter(([, n]) => Number(n) > 0)
+        : [];
+      const checkLine = browseCheck
+        ? el("div", { className: "dscr-browse-checkline", role: "status" },
+            el("span", { className: "dscr-browse-check-title" }, t("checkSummary") + ":"),
+            " " + t("browsePairs") + " " + ((browseCheck.checked && browseCheck.checked.pairs) || 0)
+              + " · " + t("memoryCount") + " " + ((browseCheck.checked && browseCheck.checked.memories) || 0)
+              + " · " + t("browseCounts") + " " + ((browseCheck.checked && browseCheck.checked.total) || 0),
+            checkMismatches.length > 0
+              ? el("span", { className: "dscr-browse-check-mismatches" },
+                  " — " + checkMismatches.map(([state, n]) => t(countStatusKey(state)) + " " + n).join(", "))
+              : el("span", null, " — " + t("checkNoMismatch")),
+            browseCheck.truncated ? el("span", { className: "dscr-browse-note" }, " · " + t("checkTruncated")) : null)
+        : null;
+
+      const browseToolbar = el("div", { className: "dscr-browse-toolbar" },
+        el("div", { className: "dscr-browse-mode", role: "group", "aria-label": t("browseModeLabel") },
+          el("button", {
+            key: "memories",
+            className: "dscr-browse-mode-btn" + (browseKind === "memories" ? " dscr-browse-mode-active" : ""),
+            type: "button",
+            "aria-pressed": browseKind === "memories",
+            disabled: browseLoading || browseBusy !== "",
+            onClick: () => switchBrowseKind("memories"),
+          }, t("browseMemories") + " (" + (scopeInfo.memories ?? 0) + ")"),
+          el("button", {
+            key: "pairs",
+            className: "dscr-browse-mode-btn" + (browseKind === "pairs" ? " dscr-browse-mode-active" : ""),
+            type: "button",
+            "aria-pressed": browseKind === "pairs",
+            disabled: browseLoading || browseBusy !== "",
+            onClick: () => switchBrowseKind("pairs"),
+          }, t("browsePairs") + " (" + (scopeInfo.pairs ?? 0) + ")")),
+        el("select", {
+          className: "dscr-input dscr-browse-scope",
+          value: scopeSelectValue(browseScope),
+          disabled: browseLoading || browseBusy !== "",
+          onChange: (e) => {
+            const v = e.target.value;
+            if (v === "all") changeBrowseScope({ type: "all" });
+            else if (v === "global") changeBrowseScope({ type: "global" });
+            else changeBrowseScope({ type: "workspace", cwd: v.slice("workspace:".length) });
+          },
+        },
+          el("option", { key: "all", value: "all" }, t("scopeAll")),
+          browseKind === "memories"
+            ? el("option", { key: "global", value: "global" }, t("browseScopeGlobal"))
+            : null,
+          ...browseScopes.filter((s) => s.type === "workspace").map((s) =>
+            el("option", { key: scopeSelectValue(s), value: scopeSelectValue(s) }, scopeLabelText(s)))),
+        el("button", {
+          className: "dscr-btn",
+          type: "button",
+          disabled: browseChecking || browseBusy !== "",
+          onClick: () => {
+            // A user-initiated check replaces any older banner; checks run
+            // after a repair keep the repair's success message.
+            setBrowseBanner(null);
+            runBrowseCheck();
+          },
+        }, t(browseChecking ? "checkingIndex" : "checkIndex")),
+        el("button", {
+          className: "dscr-btn",
+          type: "button",
+          disabled: browseLoading || browseBusy !== "",
+          onClick: refreshBrowse,
+        }, t("refresh")),
+        el("label", { className: "dscr-browse-toggle" },
+          el("input", {
+            type: "checkbox",
+            checked: browseOnlyMismatch,
+            disabled: !browseCheck || browseChecking || browseBusy !== "",
+            onChange: (e) => setBrowseOnlyMismatch(e.target.checked),
+          }),
+          " " + t("onlyMismatched")));
+
+      const browseBannerNode = browseBanner
+        ? el("div", { className: "dscr-banner" + (browseBanner.kind === "error" ? " dscr-banner-error" : ""), role: "status", "aria-live": "polite" },
+            el("strong", null, browseBanner.kind === "error" ? t("error") : t("ok")),
+            " " + browseBanner.text)
+        : null;
+
+      const browseCards = [
+        el("div", { className: "dscr-card" },
+          el("h2", { className: "dscr-title" }, t("browseTab")),
+          el("p", { className: "dscr-help" }, t("browseHelp")),
+          browseToolbar,
+          checkLine,
+          browseBannerNode,
+          el("div", { className: "dscr-browse-split" }, listPanel, detailPanel)),
+      ];
+
       const panel = (id, children, selected) => el("div", {
         id: panelDomId(id),
         className: "dscr-panel",
@@ -689,6 +1331,7 @@ window.__ModuleLoader__.load({
 
       const tabs = [
         { id: "dashboard", labelKey: "dashboardTab", content: dashboardCards },
+        { id: "browse", labelKey: "browseTab", content: browseCards },
         { id: "configuration", labelKey: "configurationTab", dirty, content: configurationCards },
         { id: "logs", labelKey: "logsTab", content: logsCards },
       ];
@@ -747,6 +1390,46 @@ window.__ModuleLoader__.load({
         logLimitPending: "not applied yet",
         logEmpty: "No log entries in the current window. Enable debug capture to collect more detail.",
         logCount: "entries", logPollError: "Auto refresh failed", logsLabel: "Log entries",
+        // Browse tab
+        browseTab: "Browse",
+        browseHelp: "Browse the stored memories and message pairs, inspect their index status, check index consistency, re-index a single entry, or forget a memory.",
+        browseMemories: "Memories", browsePairs: "Pairs",
+        browseModeLabel: "Data set",
+        browseScopeGlobal: "Global",
+        browseListLabel: "Entries", browseDetailLabel: "Details",
+        browseSelectHint: "Select an entry to see its details.",
+        browseLoadMore: "Load more", browseLoading: "Loading…",
+        browseEmptyMemories: "No memories in this scope.",
+        browseEmptyPairs: "No message pairs in this scope.",
+        browseEmptyMismatch: "No mismatched entries.",
+        checkIndex: "Check index", checkingIndex: "Checking…",
+        onlyMismatched: "Only mismatched",
+        checkSummary: "Index check",
+        checkTruncated: "Check truncated — too many mismatches to list.",
+        checkNoMismatch: "No mismatches found.",
+        memoryCount: "Memories", browseCounts: "Total",
+        statusConsistent: "Consistent", statusMissing: "Missing", statusStale: "Stale text",
+        statusPending: "Pending", statusModel: "Model mismatch", statusCorrupt: "Corrupt",
+        statusOrphan: "Index residue", statusUnknown: "Unknown",
+        reindex: "Re-index", reindexDone: "Re-indexed.",
+        reindexQueued: "Queued for re-indexing.", reindexFailed: "Re-index failed",
+        forget: "Forget", confirmForget: "Click again to confirm",
+        forgotten: "Memory forgotten.",
+        memoryContent: "Content", userMessage: "User message", assistantMessage: "Assistant reply",
+        contentTruncated: "Content too long — truncated.",
+        browseLoadError: "Failed to load entries",
+        browseNotFound: "This entry no longer exists — the list has been refreshed.",
+        browseCheckError: "Index check failed",
+        browseMetaName: "Name", browseMetaDescription: "Description", browseMetaType: "Type",
+        browseMetaCwd: "Workspace", browseMetaCreatedAt: "Created",
+        browseMetaStatus: "Status", browseMetaModel: "Model", browseMetaDim: "Dimensions",
+        browseMetaIndexedAt: "Indexed at",
+        browseMetaPairId: "Pair ID", browseMetaSessionId: "Session ID", browseMetaTurn: "Turn",
+        browseMetaOutbox: "Outbox",
+        browseMetaReason: "Reason", browseMetaAttempts: "Attempts", browseMetaLastError: "Last error",
+        globalLabel: "Global", workspaceLabel: "Workspace",
+        browseWorkspaceUnavailable: "Workspace unavailable",
+        browseEmbeddingDisabled: "Embedding is disabled or no embedding model is configured — re-index is disabled.",
       },
       zh: {
         title: "Context RAG",
@@ -788,6 +1471,46 @@ window.__ModuleLoader__.load({
         logLimitPending: "尚未应用",
         logEmpty: "当前窗口内没有日志。开启调试日志可采集更多细节。",
         logCount: "条目", logPollError: "自动刷新失败", logsLabel: "日志条目",
+        // Browse tab
+        browseTab: "浏览",
+        browseHelp: "浏览已保存的记忆与消息条目，查看索引状态，检查索引一致性，重新索引单条记录，或遗忘记忆。",
+        browseMemories: "记忆", browsePairs: "消息",
+        browseModeLabel: "数据集",
+        browseScopeGlobal: "全局",
+        browseListLabel: "条目列表", browseDetailLabel: "详情",
+        browseSelectHint: "选择条目查看详情。",
+        browseLoadMore: "加载更多", browseLoading: "加载中…",
+        browseEmptyMemories: "该范围内没有记忆。",
+        browseEmptyPairs: "该范围内没有消息条目。",
+        browseEmptyMismatch: "没有不一致的条目。",
+        checkIndex: "检查索引", checkingIndex: "检查中…",
+        onlyMismatched: "仅显示不一致",
+        checkSummary: "索引检查",
+        checkTruncated: "检查结果已截断——不一致条目过多。",
+        checkNoMismatch: "未发现不一致条目。",
+        memoryCount: "记忆", browseCounts: "总计",
+        statusConsistent: "一致", statusMissing: "缺失", statusStale: "文本过期",
+        statusPending: "待处理", statusModel: "模型不匹配", statusCorrupt: "损坏",
+        statusOrphan: "索引残留", statusUnknown: "未知",
+        reindex: "重新索引", reindexDone: "已重新索引。",
+        reindexQueued: "已加入重新索引队列。", reindexFailed: "重新索引失败",
+        forget: "遗忘", confirmForget: "再次点击确认",
+        forgotten: "记忆已遗忘。",
+        memoryContent: "内容", userMessage: "用户消息", assistantMessage: "助手回复",
+        contentTruncated: "内容过长——已截断。",
+        browseLoadError: "加载条目失败",
+        browseNotFound: "该条目已不存在——列表已刷新。",
+        browseCheckError: "索引检查失败",
+        browseMetaName: "名称", browseMetaDescription: "描述", browseMetaType: "类型",
+        browseMetaCwd: "工作区", browseMetaCreatedAt: "创建时间",
+        browseMetaStatus: "状态", browseMetaModel: "模型", browseMetaDim: "维度",
+        browseMetaIndexedAt: "索引时间",
+        browseMetaPairId: "条目 ID", browseMetaSessionId: "会话 ID", browseMetaTurn: "轮次",
+        browseMetaOutbox: "待处理队列",
+        browseMetaReason: "原因", browseMetaAttempts: "尝试次数", browseMetaLastError: "最近错误",
+        globalLabel: "全局", workspaceLabel: "工作区",
+        browseWorkspaceUnavailable: "工作区不可用",
+        browseEmbeddingDisabled: "嵌入未启用或未配置嵌入模型——无法重新索引。",
       },
     };
 
@@ -815,6 +1538,25 @@ window.__ModuleLoader__.load({
             ".dscr-btn-small { padding: 4px 10px; font-size: 12px; } .dscr-unsaved { align-self: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }",
             ".dscr-details .dscr-summary { cursor: pointer; margin: 0; } .dscr-details[open] .dscr-summary { margin-bottom: 12px; }",
             ".dscr-log-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 4px; } .dscr-log-control { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-control .dscr-input { width: 110px; } .dscr-log-count { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 4px 0 8px; } .dscr-log-pending { color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-error { font-size: 12px; color: var(--dsw-alias-state-error-primary, inherit); margin: 4px 0 8px; } .dscr-log-list { max-height: 360px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 8px; } .dscr-log-list:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; } .dscr-log-row { display: flex; gap: 8px; padding: 2px 0; color: var(--dsw-alias-label-primary, inherit); } .dscr-log-time { flex-shrink: 0; white-space: nowrap; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-level { flex-shrink: 0; font-weight: 600; color: var(--dsw-alias-label-secondary, inherit); } .dscr-log-level-error { color: var(--dsw-alias-state-error-primary, inherit); } .dscr-log-level-warn { color: var(--dsw-alias-state-warn-primary, inherit); } .dscr-log-message { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }",
+            ".dscr-browse-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 8px; } .dscr-browse-scope { max-width: 220px; }",
+            ".dscr-browse-mode { display: inline-flex; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); overflow: hidden; } .dscr-browse-mode-btn { padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--dsw-alias-label-secondary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 0; border-right: 1px solid var(--dsw-alias-border-l1); } .dscr-browse-mode-btn:last-child { border-right: 0; } .dscr-browse-mode-btn[aria-pressed='true'] { color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-1, inherit); font-weight: 600; } .dscr-browse-mode-btn:disabled { opacity: 0.5; cursor: default; } .dscr-browse-mode-btn:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: -2px; }",
+            ".dscr-browse-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); cursor: pointer; } .dscr-browse-toggle input:disabled { cursor: default; }",
+            ".dscr-browse-checkline { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 0 0 8px; overflow-wrap: anywhere; } .dscr-browse-check-title { font-weight: 600; color: var(--dsw-alias-label-primary, inherit); } .dscr-browse-check-mismatches { color: var(--dsw-alias-state-warn-primary, inherit); }",
+            ".dscr-browse-split { display: flex; align-items: stretch; gap: 12px; } .dscr-browse-list { flex: 0 0 clamp(280px, 38%, 420px); min-width: 0; display: flex; flex-direction: column; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 12px; } .dscr-browse-detail { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); padding: 12px; }",
+            ".dscr-browse-panel-title { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--dsw-alias-label-primary, inherit); }",
+            ".dscr-browse-list-scroll { overflow-y: auto; max-height: 68vh; display: flex; flex-direction: column; gap: 6px; } .dscr-browse-list-scroll:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }",
+            ".dscr-browse-row { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; padding: 8px 10px; font-size: 13px; cursor: pointer; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); } .dscr-browse-row:hover { border-color: var(--dsw-alias-border-l2); } .dscr-browse-row-selected { border-color: var(--dsw-alias-state-business-primary, var(--dsw-alias-border-l2)); box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary, var(--dsw-alias-border-l2)); } .dscr-browse-row:disabled { opacity: 0.6; cursor: default; } .dscr-browse-row:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: -2px; }",
+            ".dscr-browse-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; } .dscr-browse-row-main { flex: 1 1 auto; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .dscr-browse-row-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); min-width: 0; } .dscr-browse-row-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; } .dscr-browse-row-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; } .dscr-browse-row-date { flex-shrink: 0; }",
+            ".dscr-browse-badge { flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 999px; color: var(--dsw-alias-label-secondary, inherit); background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2, inherit)); border: 1px solid var(--dsw-alias-border-l1); }",
+            ".dscr-browse-pill { display: inline-block; flex-shrink: 0; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid transparent; } .dscr-browse-pill-consistent { color: var(--dsw-alias-state-success-primary, inherit); border-color: var(--dsw-alias-state-success-primary, inherit); } .dscr-browse-pill-missing, .dscr-browse-pill-corrupt { color: var(--dsw-alias-state-error-primary, inherit); border-color: var(--dsw-alias-state-error-primary, inherit); } .dscr-browse-pill-stale-text, .dscr-browse-pill-model-mismatch { color: var(--dsw-alias-state-warn-primary, inherit); border-color: var(--dsw-alias-state-warn-primary, inherit); } .dscr-browse-pill-pending, .dscr-browse-pill-unknown, .dscr-browse-pill-orphan { color: var(--dsw-alias-label-secondary, inherit); border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1)); }",
+            ".dscr-browse-meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; margin-bottom: 12px; } .dscr-browse-meta-row { display: contents; } .dscr-browse-meta-label { color: var(--dsw-alias-label-secondary, inherit); overflow-wrap: anywhere; } .dscr-browse-meta-value { color: var(--dsw-alias-label-primary, inherit); overflow-wrap: anywhere; text-align: right; }",
+            ".dscr-browse-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }",
+            ".dscr-browse-section { font-size: 12px; font-weight: 600; margin: 10px 0 4px; color: var(--dsw-alias-label-secondary, inherit); }",
+            ".dscr-browse-content { margin: 0; padding: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); max-height: 40vh; overflow-y: auto; }",
+            ".dscr-browse-note { font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); margin: 4px 0 0; }",
+            ".dscr-browse-empty { font-size: 13px; color: var(--dsw-alias-label-secondary, inherit); margin: 8px 0; } .dscr-browse-error { font-size: 13px; color: var(--dsw-alias-state-error-primary, inherit); margin: 8px 0; }",
+            ".dscr-browse-more { align-self: center; margin: 8px 0 2px; }",
+            "@media (max-width: 720px) { .dscr-browse-split { flex-direction: column; } .dscr-browse-list { flex: 1 1 auto; width: 100%; max-height: 45vh; } }",
           ].join("\n");
           document.head.appendChild(style);
           return () => {

@@ -271,3 +271,38 @@ to match their directories (missing entries added, entries for deleted or
 SQLite vectors for memory files that no longer exist (or were forgotten) are
 deleted. There is no real-time file watcher, so manual Markdown edits are
 picked up on the next startup.
+
+## Index consistency states
+
+The **sources of truth** are the JSONL pair files and the Markdown memory
+files; SQLite stores only the *indexed copy* (text hash, embedding, model, dim)
+as a rebuildable cache. The configuration page's Browse tab computes one
+consistency state per entry from that rule — the JSONL/memory text is compared
+against the index row's stored text hash, and the stored vector is checked for
+validity — without ever rewriting the source files (`browse.list`, `browse.get`,
+`browse.scopes`, and `browse.check` are read-only; the only Browse writes go
+through the indexer's single-entry re-index and the memory store's forget
+rename). The states are:
+
+| State | Meaning |
+| --- | --- |
+| `consistent` | The source text hash matches the index row, an embedding is stored, the vector is well-formed (dim is a positive integer and the blob length equals `dim × 4`), and — when an embedding model is configured — the stored model/dim match the configured embedding model/dimensions. |
+| `missing` | The source record exists but has no index row (never indexed, or the index was cleared). |
+| `stale-text` | The index row exists but its text hash differs from the current source text — the source changed after indexing, so the stored embedding reflects older text. |
+| `pending` | The text hash matches but no embedding is stored yet (the record is queued in the outbox, awaiting the background worker). |
+| `model-mismatch` | An embedding is stored, but its model/dim differ from the configured embedding model/dimensions, so the vector is not comparable to current queries. |
+| `corrupt` | The embedding blob is physically broken: dim is not a positive integer or the blob length does not equal `dim × 4`. |
+| `orphan` | An index row with no source record (the pair line or memory file was deleted or forgotten). Reported by the audit only; never auto-removed from Browse — the next indexer reconcile pass deletes orphan rows (see [operations.md](operations.md#index-consistency-check-and-repair)). |
+| `unknown` | The per-entry inspection itself failed. Fails open: a warning is logged and the entry reports `unknown` rather than failing the whole request. |
+
+Precedence — the first matching rule wins: `missing` → `stale-text` →
+`pending` → `corrupt` → `model-mismatch` → `consistent`. The model/dim
+comparison is skipped entirely when no embedding model is configured
+(`embedding.model` empty), because the configured dimensions do not describe
+how the stored vectors were produced.
+
+**Limitation**: the plugin does not store the embedding-input text or an
+embedding version, so consistency checks verify the source↔index **text copy**
+(text hash), the **model/dim**, and the **vector validity** (well-formed blob
+length) — they do **not** verify the *semantic* correctness of a vector
+(whether the stored numbers actually represent the current text).

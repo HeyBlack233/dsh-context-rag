@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createIndexer } from "../lib/indexer.js";
 import { appendPair } from "../lib/pairs.js";
+import { pairFilePath, textHash } from "../lib/paths.js";
 import { buildEmbeddingText } from "../lib/text.js";
 
 /** @param {number} ms @returns {Promise<void>} */
@@ -83,12 +84,18 @@ class FakeDb {
     const existing = this.pairs.get(record.pairId);
     this.pairs.set(record.pairId, {
       pairId: record.pairId,
+      sessionId: record.sessionId ?? "",
+      cwd: record.cwd ?? "",
+      turn: record.turn ?? 0,
+      createdAt: record.createdAt ?? 0,
       userText: record.user,
       assistantText: record.assistant,
+      textHash: textHash(`${record.user}\u0000${record.assistant}`),
       recordType: "pair",
       embedding: existing?.embedding ?? null,
       model: existing?.model ?? null,
       dim: existing?.dim ?? null,
+      indexedAt: existing?.indexedAt ?? null,
     });
     if (!existing) {
       this.outbox.set(record.pairId, { reason: "new", attempts: 0, nextAt: 0, lastError: null });
@@ -112,14 +119,21 @@ class FakeDb {
     const existing = this.pairs.get(record.pairId);
     this.pairs.set(record.pairId, {
       pairId: record.pairId,
+      sessionId: "",
+      cwd: record.memoryType === "global" ? "" : (record.cwd ?? ""),
+      turn: 0,
+      createdAt: record.createdAt ?? 0,
       userText: record.content,
       assistantText: "",
+      textHash: textHash(record.content),
       recordType: "memory",
       memoryType: record.memoryType ?? "workspace",
       name: record.name ?? "",
+      description: record.description ?? "",
       embedding: existing?.embedding ?? null,
       model: existing?.model ?? null,
       dim: existing?.dim ?? null,
+      indexedAt: existing?.indexedAt ?? null,
     });
     if (!existing) {
       this.outbox.set(record.pairId, { reason: "new", attempts: 0, nextAt: 0, lastError: null });
@@ -132,11 +146,21 @@ class FakeDb {
     if (!pair) return null;
     return {
       pairId,
+      sessionId: pair.sessionId ?? "",
+      cwd: pair.cwd ?? "",
+      turn: pair.turn ?? 0,
+      createdAt: pair.createdAt ?? 0,
       userText: pair.userText,
       assistantText: pair.assistantText,
+      textHash: pair.textHash ?? null,
       recordType: pair.recordType ?? "pair",
       memoryType: pair.memoryType ?? null,
       name: pair.name ?? "",
+      description: pair.description ?? "",
+      vector: pair.embedding ?? null,
+      dim: pair.dim ?? null,
+      model: pair.model ?? null,
+      indexedAt: pair.indexedAt ?? null,
     };
   }
 
@@ -150,15 +174,39 @@ class FakeDb {
       .map(([pairId, row]) => ({ pairId, attempts: row.attempts, reason: row.reason }));
   }
 
-  setEmbedding(pairId, vector, { model, dim }) {
+  setEmbedding(pairId, vector, { model, dim, expectedTextHash = null }) {
     this.calls.push("setEmbedding");
     const pair = this.pairs.get(pairId);
+    // Mirror the real db.js compare-and-swap guard: when an expected hash is
+    // given and the stored text hash no longer matches, nothing is written.
+    if (typeof expectedTextHash === "string" && expectedTextHash.length > 0) {
+      if (!pair || pair.textHash !== expectedTextHash) {
+        return false;
+      }
+    }
     if (pair) {
       pair.embedding = vector;
       pair.model = model;
       pair.dim = dim;
+      pair.indexedAt = Date.now();
     }
     this.outbox.delete(pairId);
+    return true;
+  }
+
+  enqueue(pairId, reason, { resetAttempts = false } = {}) {
+    this.calls.push("enqueue");
+    const existing = this.outbox.get(pairId);
+    if (existing) {
+      existing.reason = reason;
+      if (resetAttempts) {
+        existing.attempts = 0;
+        existing.nextAt = 0;
+      }
+      existing.lastError = null;
+    } else {
+      this.outbox.set(pairId, { reason, attempts: 0, nextAt: 0, lastError: null });
+    }
   }
 
   failPair(pairId, { attempts, nextAt, error }) {
@@ -806,4 +854,228 @@ test("indexer: pumpOnce mixes pair and memory rows in one batch", async (t) => {
     buildEmbeddingText({ user: "hello", assistant: "world" }, 8000),
   ]);
   assert.equal(db.outbox.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// reindexEntry: single-entry synchronous re-indexing
+// ---------------------------------------------------------------------------
+
+test("indexer: reindexEntry re-reads a pair source, refreshes text, embeds, and clears the outbox", async (t) => {
+  const home = await makeHome(t);
+  const cwd = "/work/proj";
+  const file = pairFilePath({ home, cwd, sessionId: "s-p1" });
+  await appendPair(file, sampleRecord("p1", { cwd, sessionId: "s-p1", user: "u1", assistant: "a1" }));
+
+  const db = new FakeDb();
+  db.upsertPair(sampleRecord("p1", { cwd, sessionId: "s-p1", user: "u1", assistant: "a1" }));
+  const embeddings = fakeEmbeddings({ vectors: [[1, 2]], dimension: 2 });
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings,
+    logger: null,
+    home,
+  });
+
+  const result = await indexer.reindexEntry("p1");
+
+  assert.equal(result.pairId, "p1");
+  assert.equal(result.kind, "pair");
+  assert.equal(result.model, "text-embedding-3-small");
+  assert.equal(result.dim, 2);
+  assert.ok(Number.isInteger(result.indexedAt));
+  assert.equal(embeddings.calls.length, 1, "exactly one embed call");
+  assert.deepEqual(
+    embeddings.calls[0].texts,
+    [buildEmbeddingText({ user: "u1", assistant: "a1" }, 8000)],
+  );
+  const pair = db.pairs.get("p1");
+  assert.ok(pair.embedding instanceof Float32Array);
+  assert.deepEqual([...pair.embedding], [1, 2]);
+  assert.equal(pair.model, "text-embedding-3-small");
+  assert.equal(pair.dim, 2);
+  assert.equal(db.outbox.size, 0, "the outbox entry must be cleared on success");
+});
+
+test("indexer: reindexEntry re-reads a memory source and embeds its content", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  db.upsertMemory(sampleMemoryRecord("m1", { memoryType: "global", cwd: "", name: "Note", content: "memory body" }));
+  const memoryStore = {
+    get: ({ type, cwd, name }) =>
+      sampleMemoryRecord("m1", { memoryType: type, cwd, name, content: "memory body" }),
+  };
+  const embeddings = fakeEmbeddings({ vectors: [[9, 9]], dimension: 2 });
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings,
+    logger: null,
+    home,
+    memoryStore,
+  });
+
+  const result = await indexer.reindexEntry("m1");
+
+  assert.equal(result.kind, "memory");
+  assert.equal(result.model, "text-embedding-3-small");
+  assert.equal(result.dim, 2);
+  assert.equal(embeddings.calls.length, 1);
+  assert.deepEqual(embeddings.calls[0].texts, ["memory body"], "memory content embeds without the User/Assistant wrapper");
+  assert.deepEqual([...db.pairs.get("m1").embedding], [9, 9]);
+  assert.equal(db.outbox.size, 0);
+});
+
+test("indexer: reindexEntry NOT_FOUND when the index row is missing", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+  });
+
+  await assert.rejects(
+    indexer.reindexEntry("nope"),
+    (err) => err.code === "NOT_FOUND" && err.status === 404,
+  );
+});
+
+test("indexer: reindexEntry NOT_FOUND when the source is missing (pair and memory)", async (t) => {
+  const home = await makeHome(t);
+
+  // A pair row whose JSONL source vanished.
+  const db = new FakeDb();
+  db.upsertPair(sampleRecord("p1", { cwd: "/work/proj", sessionId: "s-p1", user: "u", assistant: "a" }));
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+  });
+  await assert.rejects(
+    indexer.reindexEntry("p1"),
+    (err) => err.code === "NOT_FOUND" && err.status === 404 && /Source pair line/.test(err.message),
+  );
+
+  // A memory row whose file vanished.
+  const db2 = new FakeDb();
+  db2.upsertMemory(sampleMemoryRecord("m1", { memoryType: "workspace", cwd: "/work/proj", name: "Note", content: "x" }));
+  const indexer2 = createIndexer({
+    db: db2,
+    configStore: { home, get: () => makeConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+    memoryStore: { get: () => null },
+  });
+  await assert.rejects(
+    indexer2.reindexEntry("m1"),
+    (err) => err.code === "NOT_FOUND" && err.status === 404 && /Source memory file/.test(err.message),
+  );
+});
+
+test("indexer: reindexEntry EMBEDDING_DISABLED when indexing is off or model-less", async (t) => {
+  const home = await makeHome(t);
+  const db = new FakeDb();
+  db.upsertPair(sampleRecord("p1", { cwd: "/w", sessionId: "s", user: "u", assistant: "a" }));
+
+  const disabled = createIndexer({
+    db,
+    configStore: { home, get: () => disabledConfig() },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+  });
+  await assert.rejects(
+    disabled.reindexEntry("p1"),
+    (err) => err.code === "EMBEDDING_DISABLED" && err.status === 409,
+  );
+
+  const modelless = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig({ model: "" }) },
+    embeddings: fakeEmbeddings(),
+    logger: null,
+    home,
+  });
+  await assert.rejects(
+    modelless.reindexEntry("p1"),
+    (err) => err.code === "EMBEDDING_DISABLED" && err.status === 409,
+  );
+});
+
+test("indexer: reindexEntry EMBEDDING_FAILED queues the record with attempts and last_error", async (t) => {
+  const home = await makeHome(t);
+  const cwd = "/work/proj";
+  const file = pairFilePath({ home, cwd, sessionId: "s-p1" });
+  await appendPair(file, sampleRecord("p1", { cwd, sessionId: "s-p1", user: "u1", assistant: "a1" }));
+  const db = new FakeDb();
+  db.upsertPair(sampleRecord("p1", { cwd, sessionId: "s-p1", user: "u1", assistant: "a1" }));
+  const embeddings = fakeEmbeddings({ failure: new Error("embedding service down") });
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings,
+    logger: null,
+    home,
+  });
+
+  const before = Date.now();
+  await assert.rejects(
+    indexer.reindexEntry("p1"),
+    (err) =>
+      err.code === "EMBEDDING_FAILED"
+      && err.status === 500
+      && err.details !== null
+      && err.details.queued === true,
+  );
+
+  const row = db.outbox.get("p1");
+  assert.ok(row, "the record must stay queued for the background worker");
+  assert.equal(row.reason, "manual");
+  assert.equal(row.attempts, 1);
+  assert.equal(row.lastError, "embedding service down");
+  assert.ok(row.nextAt >= before, "nextAt must be scheduled in the future");
+});
+
+test("indexer: reindexEntry TEXT_CHANGED when the source text changes during embedding", async (t) => {
+  const home = await makeHome(t);
+  const cwd = "/work/proj";
+  const file = pairFilePath({ home, cwd, sessionId: "s-p1" });
+  await appendPair(file, sampleRecord("p1", { cwd, sessionId: "s-p1", user: "u1", assistant: "a1" }));
+  const db = new FakeDb();
+  db.upsertPair(sampleRecord("p1", { cwd, sessionId: "s-p1", user: "u1", assistant: "a1" }));
+  const embeddings = {
+    calls: [],
+    async embed(texts) {
+      this.calls.push({ texts });
+      // Simulate a concurrent text change while the embedding is in flight.
+      const pair = db.pairs.get("p1");
+      pair.textHash = "concurrent-change";
+      pair.userText = "changed user";
+      return { vectors: [[1, 2]], model: "text-embedding-3-small", dimension: 2 };
+    },
+  };
+  const indexer = createIndexer({
+    db,
+    configStore: { home, get: () => makeConfig() },
+    embeddings,
+    logger: null,
+    home,
+  });
+
+  await assert.rejects(
+    indexer.reindexEntry("p1"),
+    (err) => err.code === "TEXT_CHANGED" && err.status === 409,
+  );
+
+  const pair = db.pairs.get("p1");
+  assert.equal(pair.embedding, null, "the stale vector must not be stored");
+  assert.equal(pair.userText, "changed user", "the concurrent change must be preserved");
+  assert.ok(db.outbox.has("p1"), "the manual outbox entry must remain for the worker");
+  assert.equal(db.outbox.get("p1").reason, "manual");
 });

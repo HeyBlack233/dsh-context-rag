@@ -119,12 +119,12 @@ Release Date: TBD
   through the disposers returned by `ctx.on` and probe `ctx.off` defensively.
   Cordis contexts without an `off` method throw on the property read (observed
   on dsh `0.2.1-rc.2` during plugin disposal).
-- **Logs tab** on the configuration page: a third tab (after **Dashboard** and
-  **Configuration**) shows the plugin's own log entries — UTC ISO time, level
-  (`debug` / `info` / `warn` / `error`), and message — oldest to newest in a
-  scrollable list, auto-refreshing every 2 seconds while the tab is active and
-  stopping when you leave it. The tab offers an **N** input with **Apply**, an
-  **Enable debug** checkbox, **Refresh**, and **Write to disk**.
+- **Logs tab** on the configuration page: shows the plugin's own log entries —
+  UTC ISO time, level (`debug` / `info` / `warn` / `error`), and message —
+  oldest to newest in a scrollable list, auto-refreshing every 2 seconds while
+  the tab is active and stopping when you leave it. The tab offers an **N**
+  input with **Apply**, an **Enable debug** checkbox, **Refresh**, and
+  **Write to disk**.
 - **In-memory log window**: the plugin's logger is teed into a bounded in-memory
   ring buffer that keeps only the latest `logging.bufferSize` entries (default
   `200`, integer `1..5000`). Logs are **never written to disk automatically** —
@@ -140,3 +140,36 @@ Release Date: TBD
   and shows the path on the page. Each click produces a new file; exports do
   not participate in log rolling or cleanup. Log entries never contain message
   or memory bodies, query text, or API keys.
+- **Browse tab** on the configuration page (second tab, after **Dashboard**):
+  browse stored memories and message pairs per scope (`All` / `Global` /
+  workspaces; `Global` is memories-only) in a split list/detail view that
+  stacks vertically on narrow screens (≤ 720 px). Lists load lazily on tab
+  entry — no search, no polling — one page of 20 at a time with a **Load
+  more** button. Pair rows preview the user message (200 characters,
+  whitespace-normalized); the detail shows the full text capped at 200,000
+  characters per field with a truncation note, plus metadata, index status,
+  and outbox state for pending entries. Everything is read-only except the
+  two explicit actions below.
+- **Index consistency statuses**: every Browse entry carries a status pill —
+  `consistent`, `missing`, `stale-text`, `pending`, `model-mismatch`,
+  `corrupt`, `orphan` (audit only), and `unknown` (fail-open) — computed from
+  the source-of-truth rule (JSONL + memory files are authoritative; SQLite
+  stores the indexed copy). Precedence: `missing` → `stale-text` → `pending` →
+  `corrupt` → `model-mismatch` → `consistent`; the model/dim comparison is
+  skipped when no embedding model is configured.
+- **Check index (audit)**: the Browse **Check index** action audits the
+  current scope on demand — status counts, mismatched entries (capped at 500
+  with a truncation notice), orphan rows, and malformed JSONL line counts —
+  with an **Only mismatched** filter. There is no automatic or periodic audit;
+  orphans are reported only and cleaned by the next indexer reconcile pass.
+- **Per-entry re-index**: non-consistent entries offer a **Re-index** action
+  that synchronously re-embeds the single entry through the configured
+  embedding endpoint (disabled when no embedding model is configured). On
+  failure the entry stays queued in the outbox for the background retry, and a
+  text-hash compare-and-swap prevents a stale vector from overwriting newer
+  text.
+- **Forget from Browse**: memories can be forgotten in the Browse tab with a
+  two-click confirmation, with the same semantics as `memory_forget` — the
+  file is renamed to `<name>.forgotten` (history preserved on disk), the
+  `MEMORY.md` index is rebuilt, and the index row and recall-state entries are
+  removed.

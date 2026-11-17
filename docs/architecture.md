@@ -61,8 +61,24 @@ rather than disrupting the turn.
 | `lib/inject.js` | Dedupe per user message, apply the short-message gate, attach the injected context message, and record the actually rendered candidates for turn dedupe. |
 | `lib/recall-state.js` | Persistent turn-dedupe state: per-(session, pair) last turn, timestamp, and count; entry removal for forgotten memories; retention pruning; atomic persistence. |
 | `lib/log-buffer.js` | In-memory ring buffer that tees the plugin logger (`ctx.logger`), keeps the latest `logging.bufferSize` entries (UTC time, level, message), serializes them as plain text, and writes manual exports. |
+| `lib/browse.js` | Read-only browse and audit service for the configuration page's Browse tab: scope discovery, paged source listing (memories/pairs), per-entry detail reads, per-entry index-consistency status, and the full scope audit. Never rewrites the sources or the index; single-entry repair is delegated to the indexer and the memory store. |
 | `lib/api.js` | Plugin-internal API surface (services exposed to the host). |
 | `client.js` | Web config page presented in the Harness GUI. |
+
+### Browse / audit / repair path
+
+A third, interactive surface — the **Browse** tab — sits on top of the same
+store. It re-reads the authoritative sources (JSONL lines and memory Markdown
+files) plus the lightweight `db.indexRows()` view and computes a per-entry
+consistency state (see
+[storage-and-data-model.md](storage-and-data-model.md#index-consistency-states))
+without mutating anything: `browse.scopes` / `browse.list` / `browse.get` /
+`browse.check` are pure reads, and the audit (`browse.check`) also reports
+orphan index rows and malformed JSONL lines. The only writes flow through the
+existing surfaces: per-entry re-index (`browse.reindex`) calls the indexer's
+synchronous `reindexEntry` (one embedding request, outbox fallback, text-hash
+CAS), and forget-from-Browse (`browse.forget`) calls the memory store's
+`remove` (`.forgotten` rename + index/recall-state cleanup).
 
 ## Lifecycle
 

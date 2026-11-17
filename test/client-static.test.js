@@ -216,18 +216,26 @@ test('client.js: advanced JSON is a collapsible section inside configuration', (
   assert.ok(text.includes('setAdvancedOpen'), 'advanced section must toggle its open state');
 });
 
-test('client.js: logs is the third tab after dashboard and configuration', () => {
+test('client.js: four tabs in order dashboard, browse, configuration, logs', () => {
   const text = readClient();
   assert.ok(
-    text.includes('TAB_IDS = ["dashboard", "configuration", "logs"]'),
-    'TAB_IDS must list dashboard, configuration and logs',
+    text.includes('TAB_IDS = ["dashboard", "browse", "configuration", "logs"]'),
+    'TAB_IDS must list dashboard, browse, configuration and logs',
   );
   const tabsIndex = text.indexOf('const tabs = ');
   assert.ok(tabsIndex >= 0, 'must define the tabs array');
   const tabsBlock = text.slice(tabsIndex);
   assert.ok(
+    tabsBlock.includes('{ id: "browse", labelKey: "browseTab", content: browseCards }'),
+    'must add a browse tab entry labelled browseTab without a dirty marker',
+  );
+  assert.ok(
     tabsBlock.includes('{ id: "logs", labelKey: "logsTab", content: logsCards }'),
     'must add a logs tab entry labelled logsTab without a dirty marker',
+  );
+  assert.ok(
+    tabsBlock.indexOf('{ id: "browse"') < tabsBlock.indexOf('{ id: "configuration"'),
+    'browse must come before configuration in the tab order',
   );
   assert.ok(
     tabsBlock.indexOf('{ id: "configuration"') < tabsBlock.indexOf('{ id: "logs"'),
@@ -332,6 +340,129 @@ test('client.js: EN/ZH parity for every UI translation key', () => {
     assert.ok(
       count >= 2,
       `key "${key}" must appear at least twice (EN + ZH), found ${count}`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Browse tab (static contracts)
+// ---------------------------------------------------------------------------
+
+test('client.js: browse actions call browse.scopes/list/get/check/reindex/forget', () => {
+  const text = readClient();
+  for (const action of [
+    'browse.scopes',
+    'browse.list',
+    'browse.get',
+    'browse.check',
+    'browse.reindex',
+    'browse.forget',
+  ]) {
+    assert.ok(text.includes(action), `must call the ${action} action`);
+  }
+  assert.ok(text.includes('BROWSE_PAGE_SIZE'), 'must define the browse page size');
+  assert.ok(text.includes('limit: BROWSE_PAGE_SIZE'), 'must send BROWSE_PAGE_SIZE as the list limit');
+});
+
+test('client.js: EN/ZH parity for every Browse tab translation key', () => {
+  const text = readClient();
+  const browseKeys = [
+    'browseTab', 'browseHelp', 'browseMemories', 'browsePairs', 'browseModeLabel',
+    'browseScopeGlobal', 'browseListLabel', 'browseDetailLabel', 'browseSelectHint',
+    'browseLoadMore', 'browseLoading', 'browseEmptyMemories', 'browseEmptyPairs',
+    'browseEmptyMismatch', 'checkIndex', 'checkingIndex', 'onlyMismatched',
+    'checkSummary', 'checkTruncated', 'checkNoMismatch', 'memoryCount', 'browseCounts',
+    'statusConsistent', 'statusMissing', 'statusStale', 'statusPending', 'statusModel',
+    'statusCorrupt', 'statusOrphan', 'statusUnknown',
+    'reindex', 'reindexDone', 'reindexQueued', 'reindexFailed', 'forget',
+    'confirmForget', 'forgotten', 'memoryContent', 'userMessage', 'assistantMessage',
+    'contentTruncated', 'browseLoadError', 'browseNotFound', 'browseCheckError',
+    'browseMetaName', 'browseMetaDescription', 'browseMetaType', 'browseMetaCwd',
+    'browseMetaCreatedAt', 'browseMetaStatus', 'browseMetaModel', 'browseMetaDim',
+    'browseMetaIndexedAt', 'browseMetaPairId', 'browseMetaSessionId', 'browseMetaTurn',
+    'browseMetaOutbox', 'browseMetaReason', 'browseMetaAttempts', 'browseMetaLastError',
+    'globalLabel', 'workspaceLabel', 'browseWorkspaceUnavailable', 'browseEmbeddingDisabled',
+  ];
+  for (const key of browseKeys) {
+    const pattern = new RegExp(`${key}\\s*:`, 'g');
+    const count = (text.match(pattern) || []).length;
+    assert.ok(
+      count >= 2,
+      `key "${key}" must appear at least twice (EN + ZH), found ${count}`,
+    );
+  }
+});
+
+test('client.js: browse split-view and status-pill classes and row/mode aria attributes are referenced', () => {
+  const text = readClient();
+  for (const cls of [
+    'dscr-browse-split',
+    'dscr-browse-list',
+    'dscr-browse-detail',
+    'dscr-browse-pill',
+    'dscr-browse-pill-consistent',
+    'dscr-browse-pill-missing',
+    'dscr-browse-pill-stale-text',
+    'dscr-browse-pill-model-mismatch',
+    'dscr-browse-pill-corrupt',
+    'dscr-browse-pill-pending',
+    'dscr-browse-pill-orphan',
+    'dscr-browse-pill-unknown',
+    'dscr-browse-row',
+    'dscr-browse-mode',
+  ]) {
+    assert.ok(text.includes(cls), `must reference the ${cls} class`);
+  }
+  for (const aria of [
+    '"aria-pressed"',
+    '"aria-current"',
+    'role: "group"',
+    'role: "list"',
+    'role: "region"',
+    'role: "status"',
+    '"aria-label": t("browseModeLabel")',
+    '"aria-label": t("browseListLabel")',
+    '"aria-label": t("browseDetailLabel")',
+  ]) {
+    assert.ok(text.includes(aria), `must use ${aria}`);
+  }
+});
+
+test('client.js: Browse render uses translation keys only, no hard-coded visible strings', () => {
+  const text = readClient();
+  const browseStart = text.indexOf('// Browse tab render');
+  const tabsStart = text.indexOf('const tabs = [');
+  assert.ok(browseStart >= 0 && tabsStart > browseStart, 'must isolate the Browse render section');
+  const block = text.slice(browseStart, tabsStart);
+
+  // Remove every direct t("...") call, then every remaining string literal
+  // must be a non-display token (class name, tag name, aria token, key,
+  // separator) rather than user-visible text.
+  const stripped = block.replace(/t\("[^"]*"\)/g, 't("")');
+  const allowedTokens = new Set([
+    // HTML tag names / input types
+    'div', 'span', 'button', 'h2', 'h3', 'p', 'pre', 'select', 'option',
+    'label', 'input', 'strong', 'checkbox',
+    // aria / role tokens
+    'aria-current', 'aria-label', 'aria-labelledby', 'aria-live', 'aria-pressed',
+    'group', 'list', 'polite', 'region', 'status', 'tabpanel',
+    // browse kind / scope / state keys
+    'memories', 'pairs', 'memory', 'all', 'global', 'workspace', 'workspace:',
+    'consistent', 'pending', 'orphan', 'error', 'true', '__browse-more',
+    // translation keys passed to t() indirectly (ternary/helper arguments)
+    'browseEmptyMemories', 'browseEmptyPairs', 'checkIndex', 'checkingIndex',
+    'confirmForget', 'forget',
+    // separators and punctuation
+    ' ', ' (', ' · ', ' — ', ')', ', ', ':', ': ',
+  ]);
+  for (const match of stripped.matchAll(/"([^"\\]*)"/g)) {
+    const literal = match[1];
+    assert.ok(
+      literal === ''
+        || /^ ?dscr-/.test(literal)
+        || /^(aria-|dsw-)/.test(literal)
+        || allowedTokens.has(literal),
+      `hard-coded string ${JSON.stringify(literal)} found in the Browse render code`,
     );
   }
 });

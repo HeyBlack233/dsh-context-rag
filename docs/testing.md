@@ -29,6 +29,7 @@ Tests live under `test/` as `test/*.test.js`. Shared helpers are in
 ```
 test/
 ├── api.test.js
+├── browse.test.js
 ├── capture.test.js
 ├── client-static.test.js
 ├── config.test.js
@@ -62,23 +63,24 @@ test/
 | `paths` | Data-home resolution and every path underneath it. |
 | `text` | Text normalization, `minMessageLength` word/Han counting, and character truncation. |
 | `pairs` | Reading/appending the JSONL pair log and text-hash computation. |
-| `db` | SQLite schema creation (including the non-destructive memory-column migration), connection handling, and atomic writes. |
+| `db` | SQLite schema creation (including the non-destructive memory-column migration), connection handling, atomic writes, and the lightweight `indexRows()` view (text hash, model/dim, embedding byte length, outbox join) that backs the browse/audit service. |
 | `http` | The shared HTTP client behavior (timeouts, retries, errors). |
 | `embeddings` | Calling the embedding API and producing normalized vectors. |
 | `rerank` | The optional OpenAI-compatible rerank endpoint call. |
 | `capture` | Turn-stopping capture: what to store, the short-message skip (no JSONL/DB/outbox), and outbox enqueueing. |
-| `indexer` | Background worker: draining the outbox (pairs and memories), batching, retry. |
+| `indexer` | Background worker: draining the outbox (pairs and memories), batching, retry; plus the single-entry synchronous re-index (`reindexEntry`): fresh source re-read, outbox fallback with `{queued: true}` on failure, and the text-hash compare-and-swap that refuses to overwrite newer text. |
+| `browse` | The browse/audit service (`lib/browse.js`): scope discovery with per-scope counts, paged listing (memories by name, pairs newest first), per-entry detail reads (200-char previews, 200,000-char text caps with truncation flags, outbox info), and the full scope audit — status counts, the 500-entry mismatch cap with the `truncated` flag, orphan reporting, and malformed-JSONL-line counting. It pins the `computeStatus` precedence (`missing` → `stale-text` → `pending` → `corrupt` → `model-mismatch` → `consistent`), the fail-open `unknown` state, and the model/dim check being skipped when no embedding model is configured. |
 | `render` | Building the injected context text from retrieved pairs and memories. |
 | `retrieval` | Query embedding, candidate scan over pairs and memories, scoring, and top-K selection. |
 | `recall-state` | Persistent turn-dedupe state: load/prune/record/remove/eligibility, retention by days and max sessions, corrupt/missing-file handling, and atomic persistence. |
 | `inject` | Per-user-message dedupe, the short-message gate, and attaching the injected context message. |
-| `memories` | Memory store: Markdown + YAML front matter, `MEMORY.md` index maintenance, `.forgotten` handling, name/content validation, and the startup sync scan. |
+| `memories` | Memory store: Markdown + YAML front matter, `MEMORY.md` index maintenance, `.forgotten` handling, name/content validation, the startup sync scan, and the exact-match `remove` shared by `memory_forget` and forget-from-Browse. |
 | `memory-tools` | The `memory_list` / `memory_get` / `memory_write` / `memory_forget` tools: scoping to global or the current workspace, overwrite/duplicate rules, exact-match forgetting, turn-dedupe recording on write and cleanup on forget, and error mapping. |
 | `log-buffer` | The in-memory ring buffer: latest-N window and trimming, logger tee, text serialization, and export (file naming, collision suffix, header, and mode `0600`). |
-| `api` | The host-facing HTTP API, trust checks, actions (including `logs.get`, `logs.configure`, and `logs.export`), and error mapping. |
+| `api` | The host-facing HTTP API, trust checks, actions (including `logs.get`, `logs.configure`, `logs.export`, and the `browse.*` family — scope validation, kind/paging validation, the audit, single-entry re-index, and forget), and error mapping. |
 | `integration` | Real modules end-to-end: `apply()` listener/API registration, capture → JSONL → SQLite → indexer → retrieval → injection, the short-message gate suppressing both capture and injection, memory tools → Markdown files → `MEMORY.md` index → shared outbox → memory + pair recall, turn dedupe for both injections and memory writes, workspace/all scope, same-session exclusion, rerank fallback, disabled indexing, and render budget. Logging is covered end-to-end too: the logger tee feeds the ring buffer, config changes resize it, and an export writes the `logs/` file. |
 | `manifest` | Package/exports/bundle patch/locales/docs consistency, the DSH compatibility range, and the no-icon contract. |
-| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring (three tabs) and accessibility, the Logs tab (log list, N input, debug toggle, export button, and active-tab auto-refresh), action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
+| `client-static` | Static browser-half contracts: slot key, bound locale registration, status shape, tab wiring (four tabs, Dashboard → Browse → Configuration → Logs) and accessibility, the Browse tab (mode/scope controls, split view, status pills, check-index audit, only-mismatched filter, re-index and two-click forget, lazy load without polling, page size 20, preview/truncation caps, theme-token status colors, EN/ZH key parity), the Logs tab (log list, N input, debug toggle, export button, and active-tab auto-refresh), action placement, collapsible advanced JSON, form fields, theme tokens, and EN/ZH key parity. |
 
 The `integration` suite is the end-to-end proof; the `api` suite covers the
 HTTP boundary itself.
@@ -156,6 +158,32 @@ live session:
     new `context-rag-*.log` file appears under `$DSH_HOME/context-rag/logs/`
     (host-local timestamp; `-1`/`-2` suffix on collision), and that the log
     list refreshes while the tab stays active and stops after you leave it.
+15. **Check the Browse tab** — open the **Browse** tab (second tab, after
+    **Dashboard**). Confirm the Memories/Pairs mode switch, the scope filter
+    (`All` / `Global` / workspaces; `Global` is memories-only), the split
+    list/detail layout, status pills per row, and **Load more** paging (20
+    entries per page). Confirm nothing loads while the tab is hidden (lazy
+    load on entry) and there is no polling.
+16. **Run Check index** — click **Check index** and confirm the summary line
+    (pairs/memories/total, per-status counts) and the **Only mismatched**
+    filter. Hand-edit a pair line in `pairs/` (or a memory file) so its text
+    differs from the indexed copy, refresh the list, and confirm the entry now
+    shows **Stale text**; click **Check index** again and confirm the entry
+    appears under the mismatched counts. There is no automatic audit — nothing
+    changes until you click.
+17. **Re-index one entry** — with an embedding endpoint configured, select the
+    stale entry and click **Re-index**; confirm the status becomes
+    **Consistent** and the model/dim/indexed-at metadata updates. Stop the
+    endpoint (or point it at a failing URL), re-index a pending entry, and
+    confirm the failure message keeps the entry queued in the outbox (the
+    detail shows the outbox reason/attempts/last error). Clear the embedding
+    `model` and confirm the **Re-index** button is disabled.
+18. **Forget from Browse** — select a memory and click **Forget** twice
+    (two-click confirmation; the label changes on the first click). Confirm
+    the row disappears, `memories/.../<name>.md` was renamed to
+    `<name>.forgotten` (still on disk), the `MEMORY.md` index no longer lists
+    it, and its SQLite row and recall-state entries are gone. Verify leaving
+    the tab disarms a pending confirmation.
 
 See [operations.md](operations.md) for the data paths and
 [retrieval-and-injection.md](retrieval-and-injection.md) for how injected

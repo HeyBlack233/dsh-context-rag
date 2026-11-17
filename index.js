@@ -257,8 +257,23 @@ export function apply(ctx, config = {}) {
   }
 
   // Config API. Prefer injection so the route only mounts once webServer is
-  // available; fall back to a directly present `ctx.webServer`.
-  const deps = { configStore, db, embeddings, reranker, indexer, retriever, injector, recallState, initError, logs };
+  // available; fall back to a directly present `ctx.webServer`. The memory
+  // store and logger ride along in deps so the browse API can resolve the
+  // source of truth and log fail-open diagnostics.
+  const deps = {
+    configStore,
+    db,
+    embeddings,
+    reranker,
+    indexer,
+    retriever,
+    injector,
+    recallState,
+    initError,
+    logs,
+    memoryStore,
+    logger,
+  };
   try {
     if (typeof ctx.inject === "function") {
       ctx.inject(["webServer"], (webCtx) => {

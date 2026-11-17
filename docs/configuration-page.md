@@ -39,10 +39,11 @@ and indexer state stay visible while editing settings:
 - indexer running state;
 - a **Refresh** button that re-reads the saved config and runtime status.
 
-Below the strip are three tabs — **Dashboard**, **Configuration**, and **Logs**.
-The selected tab is remembered in `localStorage` (`dsh-context-rag:tab`) and
-survives a page refresh. Switching tabs never discards edits: the Dashboard and
-Configuration tabs render from the same page state.
+Below the strip are four tabs, in order — **Dashboard**, **Browse**,
+**Configuration**, and **Logs**. The selected tab is remembered in
+`localStorage` (`dsh-context-rag:tab`) and survives a page refresh. Switching
+tabs never discards edits: the Dashboard and Configuration tabs render from the
+same page state.
 
 ### Dashboard
 
@@ -56,6 +57,73 @@ for configuration:
   the JSONL log; Clear removes index rows and the pending outbox but keeps the
   pair log. Both use a two-click confirmation. Leaving the tab disarms a
   pending confirmation.
+
+### Browse
+
+The Browse tab is the read-only inspection and repair view over the stored
+data — memories and message pairs — with per-entry index-consistency status.
+Everything it lists comes from the sources of truth (the JSONL pair files and
+the Markdown memory files); the SQLite index only supplies status. The tab
+loads its data lazily on entry: nothing is fetched or polled while the tab is
+hidden, and there is **no search** and **no polling** while it is active.
+
+- **Mode switch** — a **Memories** / **Pairs** toggle switches the dataset.
+  Memories cover the global store and every workspace; pairs cover the
+  captured message pairs.
+- **Scope filter** — `All` (everything), `Global` (global memories only — a
+  memories-only scope, so it is not offered when browsing pairs), and one entry
+  per workspace that has stored data. The scope selector shows the workspace
+  name and a short slug. Switching scope or mode reloads the list and clears
+  the selection.
+- **Split view** — the list (left) and the detail of the selected entry
+  (right) are laid out side by side and **stack vertically at ≤ 720 px**
+  (`@media (max-width: 720px)` flips the split to a column; the list is capped
+  at 45 vh on narrow screens).
+- **List rows** — each row shows a status pill plus the entry identity:
+  memory rows show the name, a Global/Workspace badge, description, and
+  creation time; pair rows show a whitespace-normalized **preview of the user
+  message capped at 200 characters** (assistant text is never previewed), a
+  workspace basename, the last 8 characters of the session id, the turn
+  number, and the creation time. Rows are sorted: memories by name, pairs
+  newest first.
+- **Status pills** — every entry carries an index-consistency status pill:
+  `consistent`, `missing`, `stale-text`, `pending`, `model-mismatch`,
+  `corrupt`, `orphan` (shown as *Index residue* in the UI), or `unknown`
+  (fail-open). See
+  [storage-and-data-model.md](storage-and-data-model.md#index-consistency-states)
+  for the definitions and precedence.
+- **Detail** — clicking a row (orphan rows are disabled — they have no source
+  to show) reads the entry fresh: full metadata (id, session, workspace, turn,
+  creation time, status, indexed model/dim/indexed-at), the outbox state for
+  pending entries (reason, attempts, last error), and the full text — memory
+  content, or the user message and assistant reply. Each text field is capped
+  at **200,000 characters** and a *Content too long — truncated* note appears
+  when the cap was hit.
+- **Check index** — the **Check index** button runs `browse.check`, a full
+  on-demand audit of the current scope: counts per status, the checked pair /
+  memory totals, mismatched entries (capped at 500, with a *Check truncated*
+  note when more exist), orphans, and the number of malformed JSONL lines.
+  There is **no automatic or periodic audit**; checks only run when you click.
+  The **Only mismatched** checkbox then swaps the list to show just the
+  non-consistent entries from the last check.
+- **Per-entry re-index** — non-consistent, non-orphan entries get a
+  **Re-index** button that synchronously re-embeds the single entry through
+  the configured embedding endpoint (see
+  [operations.md](operations.md#index-consistency-check-and-repair)). It is
+  disabled while no embedding model is configured; a failed re-index leaves
+  the entry queued in the outbox for the background retry.
+- **Forget memory** — memory entries get a **Forget** button with a
+  two-click confirmation (the label changes to *Click again to confirm*; the
+  confirmation is disarmed by leaving the tab or changing selection/scope/
+  mode). It runs `browse.forget` with the exact same semantics as the
+  `memory_forget` tool: `<name>.md` is renamed to `<name>.forgotten`, the
+  `MEMORY.md` index is rebuilt, the index row and its outbox entry are
+  deleted, and the memory's recall-state entries are cleared. History stays on
+  disk — nothing is hard-deleted.
+- **Pagination** — lists load one page at a time, **20 entries per page**,
+  with a **Load more** button that appends the next page. Everything else is
+  read-only: the Browse tab never edits config, never rewrites the pair log or
+  memory files, and has no data-entry controls.
 
 ### Configuration
 
@@ -128,12 +196,22 @@ The page invokes the host API with one of these `action` values:
 | `logs.get` | Read the current in-memory log window (`{limit, debug, entries}`). | Logs |
 | `logs.configure` | Persist and apply logging settings (`{bufferSize?, debug?}`). | Logs |
 | `logs.export` | Write the current window to a new file under `logs/`; returns `{path, count}`. | Logs |
+| `browse.scopes` | List every browse scope with per-scope source counts (`{memories, pairs}` per scope) and the malformed-JSONL-line count. | Browse (list load) |
+| `browse.list` | List source entries of one kind (`memories` / `pairs`) in a scope, paged (`{kind, scope, offset, limit}`; page size 20, `limit` 1..100); items carry a status and a 200-char pair preview. | Browse (list / Load more) |
+| `browse.get` | Read one entry fresh: full text (capped at 200,000 chars per field with a `*Truncated` flag), metadata, index status, and outbox state. `NOT_FOUND` (404) when the source no longer exists. | Browse (detail) |
+| `browse.check` | Full index-consistency audit of one scope: status counts, mismatched entries (capped at 500 with a `truncated` flag), orphans, and malformed JSONL lines. | Browse (Check index) |
+| `browse.reindex` | Synchronously re-embed one entry via the configured embedding endpoint; returns the updated model/dim/indexed-at and status. `EMBEDDING_DISABLED` (409) without an embedding model; `EMBEDDING_FAILED` (500, `{queued: true}`) leaves the entry in the outbox; `TEXT_CHANGED` (409) on a concurrent text change (CAS). | Browse (Re-index) |
+| `browse.forget` | Forget a memory: renames `<name>.md` to `<name>.forgotten` (exact name + description match), rebuilds `MEMORY.md`, deletes the index row and recall-state entries. `FORGOTTEN_CONFLICT` (409) if a `.forgotten` file already exists; `NOT_FOUND` (404) on no match. | Browse (Forget, two-click confirm) |
 
 `index.rebuild` and `index.clear` run through the same API request and return
 updated status; the page reloads the status after they complete (see
 [operations.md](operations.md)). A busy indicator and the result banner are
 rendered at page level, below the tabs, so feedback stays visible after
-switching tabs.
+switching tabs. The `browse.*` actions are read-only except `browse.reindex`
+(a single embedding request for one entry) and `browse.forget` (a file rename
+plus index/recall-state cleanup) — see
+[security-and-privacy.md](security-and-privacy.md) and
+[operations.md](operations.md#index-consistency-check-and-repair).
 
 ## API keys: password inputs
 
@@ -179,22 +257,34 @@ The tab bar implements the standard tab pattern:
 - the unsaved dot is decorative for sighted users, and the tab's accessible
   label appends "Unsaved changes" when the configuration is dirty.
 
+The Browse tab follows the same conventions: the mode switch is a
+`role="group"` of toggle buttons (`aria-pressed`), the entry list is a
+`role="list"` inside a `role="region"` labelled list panel, rows are
+focusable buttons with `aria-current` for the selected row, the detail panel
+is its own labelled `role="region"`, and the check summary is announced via
+`role="status"` / `aria-live`.
+
 ## Bilingual UI (EN / ZH)
 
 All user-visible strings on the page go through translation keys. English
 (`locale/en.json`) and Simplified Chinese (`locale/zh.json`) resources are
 provided, and the page follows the active DSH locale. Labels are not hard-coded
 in the client. The plugin title and description are `Context RAG` / `上下文 RAG`
-respectively. Tab labels, the status strip, index-maintenance text, the Logs
-copy (log list, N input, debug toggle, export button, and result messages), and
-the unsaved marker all have their own keys in both locales.
+respectively. Tab labels, the status strip, index-maintenance text, the Browse
+copy (mode/scope labels, status pills, check summary, re-index and forget
+controls, truncation notes), the Logs copy (log list, N input, debug toggle,
+export button, and result messages), and the unsaved marker all have their own
+keys in both locales.
 
 ## Theme tokens
 
 The page is styled with DSH theme tokens rather than hard-coded colors, so it
 matches the active theme (light/dark and any custom palettes) automatically.
 Components use the theme's background, text, accent, border, and focus tokens
-provided by the harness.
+provided by the harness. The Browse status pills map states onto the theme's
+semantic state tokens: `consistent` uses the success token, `missing` /
+`corrupt` the error token, `stale-text` / `model-mismatch` the warn token, and
+`pending` / `unknown` / `orphan` the neutral border/secondary tokens.
 
 ## Icons
 

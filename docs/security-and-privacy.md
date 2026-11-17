@@ -67,8 +67,35 @@ only the latest `logging.bufferSize` entries (default `200`, integer
 The configuration page talks to the plugin through a single same-origin API
 (`POST /plugins/dsh-context-rag/api`). Because it is served by the running
 harness and only reachable in-process, it does not expose data to the public
-internet. The API applies trust checks on what it accepts, so only valid config
-and index actions are performed.
+internet. The API applies trust checks on what it accepts (rejecting
+`sec-fetch-site: cross-site` requests and any Origin host that does not match
+the Host header), so only valid config, index, and browse actions are
+performed.
+
+## Browse tab exposes stored text read-only
+
+The Browse tab deliberately reads raw stored content back into the browser:
+pair `user`/`assistant` message text and memory `content`, shown read-only in
+the local same-origin GUI page (list items preview the user message at 200
+characters; the detail shows up to 200,000 characters per field with a
+truncation note). This is the same plaintext data already stored on disk under
+the data home — the browse actions do not introduce any new data exposure, and
+they are **read-only**: they never rewrite the pair log or the memory files.
+
+The two mutating actions are bounded:
+
+- **Re-index** (`browse.reindex`) makes exactly **one** embedding request for
+  the single selected entry, using the saved config — the same endpoint and
+  key the indexer already uses. It only updates the local SQLite index (under
+  a text-hash CAS); it never touches the sources.
+- **Forget** (`browse.forget`) renames `<name>.md` to `<name>.forgotten` and
+  deletes the index row and recall-state entries — **history is preserved on
+  disk**, the file is never hard-deleted.
+
+Secrets are still never returned: the host API redacts API keys on read (see
+[configuration-page.md](configuration-page.md)), and browse responses contain
+only stored message/memory content, ids, counts, and status — never
+configuration credentials.
 
 ## Retrieval scope
 

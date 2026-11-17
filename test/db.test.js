@@ -909,3 +909,130 @@ test("db: enqueueAll updates reasons and keeps attempts", async (t) => {
   assert.equal(due[0].reason, "rebuild");
   assert.equal(due[0].attempts, 3); // preserved
 });
+
+test("db: indexRows returns every row with outbox LEFT JOIN columns", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1", sessionId: "session-1", cwd: "/w1", turn: 2 }));
+  db.upsertMemory(sampleMemory({ pairId: "m1", memoryType: "global", cwd: "", name: "Global", description: "G" }));
+  db.upsertMemory(sampleMemory({ pairId: "m2", memoryType: "workspace", cwd: "/w1", name: "WS", description: "W" }));
+  db.setEmbedding("p1", vector([1, 2, 3]), { model: "m1", dim: 3 });
+  db.enqueue("m1", "new");
+  db.failPair("m1", { attempts: 2, nextAt: 1_700_000_000_100, error: "rate limited" });
+
+  const rows = db.indexRows();
+  assert.equal(rows.length, 3);
+
+  // Every row carries the full documented shape.
+  const keys = [
+    "pairId", "sessionId", "turn", "recordType", "memoryType", "name", "description",
+    "cwd", "createdAt", "textHash", "model", "dim", "hasEmbedding", "embeddingLength",
+    "indexedAt", "outboxReason", "outboxAttempts", "outboxNextAt", "outboxLastError",
+  ];
+  for (const row of rows) {
+    for (const key of keys) {
+      assert.ok(key in row, `row for ${row.pairId} must carry ${key}`);
+    }
+  }
+
+  const p1 = rows.find((row) => row.pairId === "p1");
+  assert.equal(p1.sessionId, "session-1");
+  assert.equal(p1.turn, 2);
+  assert.equal(p1.recordType, "pair");
+  assert.equal(p1.memoryType, null);
+  assert.equal(p1.name, "");
+  assert.equal(p1.description, "");
+  assert.equal(p1.cwd, "/w1");
+  assert.equal(p1.createdAt, 1_700_000_000_000);
+  assert.equal(typeof p1.textHash, "string");
+  assert.equal(p1.model, "m1");
+  assert.equal(p1.dim, 3);
+  assert.equal(p1.hasEmbedding, true);
+  assert.equal(p1.embeddingLength, 12);
+  assert.equal(Number.isInteger(p1.indexedAt), true);
+  assert.equal(p1.outboxReason, null, "a row without an outbox entry has null outbox columns");
+  assert.equal(p1.outboxAttempts, null);
+  assert.equal(p1.outboxNextAt, null);
+  assert.equal(p1.outboxLastError, null);
+
+  const m1 = rows.find((row) => row.pairId === "m1");
+  assert.equal(m1.recordType, "memory");
+  assert.equal(m1.memoryType, "global");
+  assert.equal(m1.name, "Global");
+  assert.equal(m1.description, "G");
+  assert.equal(m1.cwd, "", "global memories are stored with an empty cwd");
+  assert.equal(m1.hasEmbedding, false);
+  assert.equal(m1.embeddingLength, null);
+  assert.equal(m1.outboxReason, "new");
+  assert.equal(m1.outboxAttempts, 2);
+  assert.equal(m1.outboxNextAt, 1_700_000_000_100);
+  assert.equal(m1.outboxLastError, "rate limited");
+
+  const m2 = rows.find((row) => row.pairId === "m2");
+  assert.equal(m2.memoryType, "workspace");
+  assert.equal(m2.cwd, "/w1");
+});
+
+test("db: setEmbedding CAS fails on a text hash mismatch and keeps everything unchanged", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1" }));
+  const hash = db.getPair("p1").textHash;
+  db.setEmbedding("p1", vector([1, 2, 3]), { model: "m", dim: 3 });
+  const stored = db.getPair("p1");
+  // Re-queue the pair so the test can observe that the outbox survives a CAS failure.
+  db.enqueue("p1", "text-changed", { resetAttempts: true });
+
+  const result = db.setEmbedding("p1", vector([7, 8, 9]), {
+    model: "m2",
+    dim: 3,
+    expectedTextHash: "wrong-hash",
+  });
+
+  assert.equal(result, false);
+  const after = db.getPair("p1");
+  assert.equal(after.textHash, hash);
+  assert.deepEqual([...after.vector], [1, 2, 3], "the stored embedding must be untouched");
+  assert.equal(after.model, "m", "the model must be untouched");
+  assert.equal(after.dim, 3);
+  assert.equal(after.indexedAt, stored.indexedAt, "indexed_at must be untouched");
+
+  const due = db.claimDue(Date.now(), 10);
+  assert.deepEqual(due.map((row) => row.pairId), ["p1"], "the outbox entry must survive the CAS failure");
+  assert.equal(due[0].attempts, 0, "the outbox attempts must be untouched");
+  assert.equal(due[0].reason, "text-changed", "the outbox reason must be untouched");
+});
+
+test("db: setEmbedding CAS succeeds on a matching hash, stores, and clears the outbox", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1" }));
+  const hash = db.getPair("p1").textHash;
+  db.enqueue("p1", "manual", { resetAttempts: true });
+
+  const result = db.setEmbedding("p1", vector([1, 2, 3]), {
+    model: "m",
+    dim: 3,
+    expectedTextHash: hash,
+  });
+
+  assert.equal(result, true);
+  const pair = db.getPair("p1");
+  assert.deepEqual([...pair.vector], [1, 2, 3]);
+  assert.equal(pair.model, "m");
+  assert.equal(pair.dim, 3);
+  assert.equal(Number.isInteger(pair.indexedAt), true);
+  assert.deepEqual(db.claimDue(Date.now(), 10), [], "the outbox entry must be cleared");
+});
+
+test("db: setEmbedding without an expected hash keeps the legacy behavior", async (t) => {
+  const { db } = await makeDb(t);
+  db.upsertPair(samplePair({ pairId: "p1" }));
+  const result = db.setEmbedding("p1", vector([1, 2, 3]), { model: "m", dim: 3 });
+  assert.equal(result, true);
+  assert.deepEqual([...db.getPair("p1").vector], [1, 2, 3]);
+  assert.deepEqual(db.claimDue(Date.now(), 10), []);
+
+  // A null or empty expectedTextHash behaves exactly like the legacy path.
+  db.upsertPair(samplePair({ pairId: "p2", turn: 1 }));
+  assert.equal(db.setEmbedding("p2", vector([4]), { model: "m", dim: 1, expectedTextHash: null }), true);
+  assert.equal(db.setEmbedding("p2", vector([5]), { model: "m", dim: 1, expectedTextHash: "" }), true);
+  assert.deepEqual([...db.getPair("p2").vector], [5]);
+});

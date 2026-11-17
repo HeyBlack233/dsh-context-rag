@@ -1,10 +1,12 @@
 /**
  * Tests for the plugin config API (`lib/api.js`).
  *
- * All dependencies are fakes; no network and no real SQLite. HTTP handling is
- * exercised by driving `handle` with EventEmitter-based fake req objects and
- * capturing fake res objects; actions are also driven directly through the
- * exported internal `dispatch`.
+ * All dependencies are fakes; no network is used. HTTP handling is exercised
+ * by driving `handle` with EventEmitter-based fake req objects and capturing
+ * fake res objects; actions are also driven directly through the exported
+ * internal `dispatch`. The end-to-end `browse.forget` flow additionally uses
+ * a real memory store and SQLite index in a temporary directory so the
+ * file rename and index deletion happen exactly as in production.
  */
 
 import test from "node:test";
@@ -15,7 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { API_PATH, MAX_BODY_BYTES, dispatch, handle, registerApi } from "../lib/api.js";
 import { ConfigError } from "../lib/config.js";
+import { openIndexDatabase } from "../lib/db.js";
 import { createLogBuffer } from "../lib/log-buffer.js";
+import { createMemoryStore, MemoryError } from "../lib/memories.js";
 
 /** Home used by the default fakes; never created, so fs-derived stats are 0. */
 const MISSING_HOME = join(tmpdir(), `dsh-rag-api-missing-${process.pid}`);
@@ -787,4 +791,349 @@ test("registerApi: registers an exact route whose handler answers requests", asy
 
   assert.equal(res.statusCode, 200);
   assert.equal(JSON.parse(res.body).ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// browse.* actions
+// ---------------------------------------------------------------------------
+
+/** A recording fake browse service answering every browse action. */
+function makeBrowseService() {
+  const calls = [];
+  return {
+    calls,
+    async scopes() {
+      calls.push(["scopes"]);
+      return {
+        scopes: [{ id: "all", type: "all", cwd: null, labelKey: "scopeAll", memories: 0, pairs: 0 }],
+        malformedLines: 0,
+      };
+    },
+    async list({ kind, scope, offset, limit }) {
+      calls.push(["list", { kind, scope, offset, limit }]);
+      return { kind, scope, total: 0, offset, limit, items: [] };
+    },
+    async get({ pairId }) {
+      calls.push(["get", pairId]);
+      return {
+        pairId,
+        kind: "pair",
+        sessionId: "s",
+        cwd: "/w",
+        turn: 0,
+        createdAt: 1,
+        status: { state: "consistent", model: null, dim: null, indexedAt: null },
+        user: "u",
+        assistant: "a",
+        userTruncated: false,
+        assistantTruncated: false,
+        outbox: null,
+      };
+    },
+    async check({ scope }) {
+      calls.push(["check", scope]);
+      return {
+        scope,
+        checked: { pairs: 0, memories: 0, total: 0 },
+        counts: {
+          consistent: 0, missing: 0, staleText: 0, pending: 0,
+          modelMismatch: 0, corrupt: 0, orphan: 0, unknown: 0,
+        },
+        malformedLines: 0,
+        mismatches: [],
+        truncated: false,
+      };
+    },
+    async statusOf(pairId) {
+      return { kind: "pair", status: { state: "consistent", model: null, dim: null, indexedAt: null } };
+    },
+  };
+}
+
+test("browse.scopes: returns the scope list and malformed-line count", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const result = await dispatch({ action: "browse.scopes" }, { ...deps, browse });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.scopes[0].id, "all");
+  assert.equal(result.value.malformedLines, 0);
+  assert.deepEqual(browse.calls, [["scopes"]]);
+});
+
+test("browse.scopes: NOT_READY 503 when no browse service can be built", async () => {
+  const result = await dispatch({ action: "browse.scopes" }, null);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "NOT_READY");
+  assert.equal(result.error.status, 503);
+
+  const { deps } = makeDeps();
+  const noDeps = await dispatch(
+    { action: "browse.scopes" },
+    { ...deps, browse: null, db: null, configStore: null, memoryStore: null },
+  );
+  assert.equal(noDeps.error.code, "NOT_READY");
+});
+
+test("browse.list: forwards kind/scope and defaults offset 0 / limit 20", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const result = await dispatch(
+    { action: "browse.list", payload: { kind: "pairs", scope: { type: "workspace", cwd: "/w" } } },
+    { ...deps, browse },
+  );
+
+  assert.equal(result.ok, true);
+  const call = browse.calls[0];
+  assert.equal(call[0], "list");
+  assert.equal(call[1].kind, "pairs");
+  assert.equal(call[1].scope.cwd, "/w");
+  assert.equal(call[1].offset, 0);
+  assert.equal(call[1].limit, 20);
+});
+
+test("browse.list: rejects invalid payloads without calling the service", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const invalid = [
+    null,
+    {},
+    { kind: "other" },
+    { kind: "memories", scope: { type: "nope" } },
+    { kind: "memories", scope: { type: "workspace" } }, // workspace without cwd
+    { kind: "memories", scope: null },
+    { kind: "memories", scope: { type: "all" }, offset: -1 },
+    { kind: "memories", scope: { type: "all" }, offset: 1.5 },
+    { kind: "memories", scope: { type: "all" }, offset: "0" },
+    { kind: "memories", scope: { type: "all" }, limit: 0 },
+    { kind: "memories", scope: { type: "all" }, limit: 101 },
+    { kind: "memories", scope: { type: "all" }, limit: 2.5 },
+    { kind: "memories", scope: { type: "all" }, limit: "20" },
+  ];
+  for (const payload of invalid) {
+    const result = await dispatch({ action: "browse.list", payload }, { ...deps, browse });
+    assert.equal(result.ok, false, `payload ${JSON.stringify(payload)} must be rejected`);
+    assert.equal(result.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(payload)}`);
+    assert.equal(result.error.status, 400, `payload ${JSON.stringify(payload)}`);
+  }
+  assert.equal(browse.calls.length, 0, "the service must not be called for invalid payloads");
+});
+
+test("browse.get: returns the detail and maps NOT_FOUND from the service", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+
+  const ok = await dispatch({ action: "browse.get", payload: { pairId: "p1" } }, { ...deps, browse });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.value.pairId, "p1");
+
+  const invalid = [null, {}, { pairId: "" }, { pairId: "  " }, { pairId: 42 }, { pairId: [] }];
+  for (const payload of invalid) {
+    const bad = await dispatch({ action: "browse.get", payload }, { ...deps, browse });
+    assert.equal(bad.ok, false, `payload ${JSON.stringify(payload)} must be rejected`);
+    assert.equal(bad.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(payload)}`);
+  }
+
+  const missing = new Error("No record with pairId gone");
+  missing.code = "NOT_FOUND";
+  missing.status = 404;
+  const nf = await dispatch(
+    { action: "browse.get", payload: { pairId: "gone" } },
+    { ...deps, browse: { ...browse, get: async () => { throw missing; } } },
+  );
+  assert.equal(nf.ok, false);
+  assert.equal(nf.error.code, "NOT_FOUND");
+  assert.equal(nf.error.status, 404);
+});
+
+test("browse.check: returns the audit and rejects invalid scopes", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+
+  const ok = await dispatch({ action: "browse.check", payload: { scope: { type: "all" } } }, { ...deps, browse });
+  assert.equal(ok.ok, true);
+  assert.equal(browse.calls[0][0], "check");
+  assert.equal(browse.calls[0][1].type, "all");
+
+  const invalid = [null, {}, { scope: { type: "other" } }, { scope: { type: "workspace" } }];
+  for (const payload of invalid) {
+    const bad = await dispatch({ action: "browse.check", payload }, { ...deps, browse });
+    assert.equal(bad.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(payload)}`);
+    assert.equal(bad.error.status, 400, `payload ${JSON.stringify(payload)}`);
+  }
+});
+
+test("browse.reindex: re-indexes the entry and reports its fresh status", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+  const indexer = {
+    reindexEntry: async (pairId) => ({
+      pairId,
+      kind: "pair",
+      model: "text-embedding-3-small",
+      dim: 384,
+      indexedAt: 1_700_000_000_000,
+    }),
+  };
+  const result = await dispatch(
+    { action: "browse.reindex", payload: { pairId: "p1" } },
+    { ...deps, browse, indexer },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, {
+    pairId: "p1",
+    kind: "pair",
+    model: "text-embedding-3-small",
+    dim: 384,
+    indexedAt: 1_700_000_000_000,
+    status: { state: "consistent", model: null, dim: null, indexedAt: null },
+  });
+});
+
+test("browse.reindex: maps reindexEntry errors and NOT_READY / INVALID_PAYLOAD", async () => {
+  const { deps } = makeDeps();
+  const browse = makeBrowseService();
+
+  const failed = new Error("embedding failed");
+  failed.code = "EMBEDDING_FAILED";
+  failed.status = 500;
+  failed.details = { queued: true };
+  const failingIndexer = { reindexEntry: async () => { throw failed; } };
+  const result = await dispatch(
+    { action: "browse.reindex", payload: { pairId: "p1" } },
+    { ...deps, browse, indexer: failingIndexer },
+  );
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.error, {
+    code: "EMBEDDING_FAILED",
+    message: "embedding failed",
+    status: 500,
+    details: { queued: true },
+  });
+
+  const noIndexer = await dispatch(
+    { action: "browse.reindex", payload: { pairId: "p1" } },
+    { ...deps, browse, indexer: null },
+  );
+  assert.equal(noIndexer.error.code, "NOT_READY");
+  assert.equal(noIndexer.error.status, 503);
+
+  const invalid = [null, {}, { pairId: "" }, { pairId: 42 }];
+  for (const payload of invalid) {
+    const bad = await dispatch(
+      { action: "browse.reindex", payload },
+      { ...deps, browse, indexer: { reindexEntry: async () => ({}) } },
+    );
+    assert.equal(bad.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(payload)}`);
+  }
+});
+
+test("browse.forget: removes the memory file, deletes the index row, and clears recall state", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-rag-forget-"));
+  const configStore = { home: dir, get: () => ({ embedding: { maxEmbeddingChars: 8000 } }), masked: () => ({}) };
+  const memoryStore = createMemoryStore({ home: dir, configStore, logger: null });
+  const db = openIndexDatabase(join(dir, "index.sqlite"));
+  t.after(async () => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const written = memoryStore.write({ type: "global", name: "alpha", description: "First memory", content: "Hello" });
+  db.upsertMemory(written.record);
+  assert.ok(existsSync(join(dir, "memories", "global", "alpha.md")));
+
+  const recallCalls = [];
+  const result = await dispatch(
+    {
+      action: "browse.forget",
+      payload: {
+        pairId: written.record.pairId,
+        memoryType: "global",
+        cwd: "",
+        name: "alpha",
+        description: "First memory",
+      },
+    },
+    {
+      configStore,
+      memoryStore,
+      db,
+      recallState: { remove: (options) => { recallCalls.push(options); } },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { pairId: written.record.pairId, name: "alpha", memoryType: "global" });
+  assert.ok(!existsSync(join(dir, "memories", "global", "alpha.md")), "the source file must be renamed away");
+  assert.ok(existsSync(join(dir, "memories", "global", "alpha.forgotten")), "the forgotten file must exist");
+  assert.equal(db.getPair(written.record.pairId), null, "the DB row must be deleted");
+  assert.deepEqual(recallCalls, [{ pairIds: [written.record.pairId] }]);
+});
+
+test("browse.forget: NOT_FOUND, FORGOTTEN_CONFLICT, INVALID_PAYLOAD, and NOT_READY mapping", async () => {
+  const { deps } = makeDeps();
+  const memoryStore = { remove: () => null };
+  const db = { deletePair: () => true };
+  const recallState = { remove: () => {} };
+  const base = { ...deps, memoryStore, db, recallState };
+  const payload = { pairId: "p1", memoryType: "global", cwd: "", name: "alpha", description: "d" };
+
+  // Nothing matched -> NOT_FOUND 404.
+  const nf = await dispatch({ action: "browse.forget", payload }, base);
+  assert.equal(nf.ok, false);
+  assert.equal(nf.error.code, "NOT_FOUND");
+  assert.equal(nf.error.status, 404);
+
+  // A forgotten-file conflict -> FORGOTTEN_CONFLICT 409 with details.
+  const conflict = new MemoryError("FORGOTTEN_CONFLICT", "a forgotten file already exists", { name: "alpha" });
+  const conflicting = await dispatch(
+    { action: "browse.forget", payload },
+    { ...base, memoryStore: { remove: () => { throw conflict; } } },
+  );
+  assert.equal(conflicting.ok, false);
+  assert.equal(conflicting.error.code, "FORGOTTEN_CONFLICT");
+  assert.equal(conflicting.error.status, 409);
+  assert.ok(conflicting.error.message.includes("forgotten file already exists"));
+
+  // Invalid payloads are rejected before any store call.
+  const invalid = [
+    null,
+    {},
+    { pairId: "" },
+    { pairId: "p1", memoryType: "other" },
+    { pairId: "p1", memoryType: "workspace", cwd: "", name: "n", description: "d" },
+    { pairId: "p1", memoryType: "global", cwd: "", name: "", description: "d" },
+    { pairId: "p1", memoryType: "global", cwd: "", name: "n", description: "" },
+    { pairId: "p1", memoryType: "global", cwd: 42, name: "n", description: "d" },
+  ];
+  for (const badPayload of invalid) {
+    const bad = await dispatch({ action: "browse.forget", payload: badPayload }, base);
+    assert.equal(bad.error.code, "INVALID_PAYLOAD", `payload ${JSON.stringify(badPayload)}`);
+    assert.equal(bad.error.status, 400, `payload ${JSON.stringify(badPayload)}`);
+  }
+
+  // Missing dependencies -> NOT_READY 503.
+  const noStore = await dispatch({ action: "browse.forget", payload }, { ...base, memoryStore: null });
+  assert.equal(noStore.error.code, "NOT_READY");
+  const noDb = await dispatch({ action: "browse.forget", payload }, { ...base, db: null });
+  assert.equal(noDb.error.code, "NOT_READY");
+});
+
+test("browse.forget: a throwing recallState is fail-open", async () => {
+  const { deps } = makeDeps();
+  const result = await dispatch(
+    {
+      action: "browse.forget",
+      payload: { pairId: "p1", memoryType: "global", cwd: "", name: "alpha", description: "d" },
+    },
+    {
+      ...deps,
+      memoryStore: { remove: () => ({ record: { pairId: "p1" } }) },
+      db: { deletePair: () => true },
+      recallState: { remove: () => { throw new Error("boom"); } },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { pairId: "p1", name: "alpha", memoryType: "global" });
 });

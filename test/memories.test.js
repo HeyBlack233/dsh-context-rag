@@ -12,7 +12,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createMemoryStore, MemoryError } from "../lib/memories.js";
 import { workspaceSlug } from "../lib/paths.js";
@@ -716,4 +716,96 @@ test("memories: createMemoryStore requires a home directory", () => {
     () => createMemoryStore({ configStore: configStore() }),
     (err) => err instanceof MemoryError && err.code === "INVALID_INPUT",
   );
+});
+
+// ---------------------------------------------------------------------------
+// listAll(): read-only global + workspaces listing
+// ---------------------------------------------------------------------------
+
+test("memories: listAll returns global first then workspaces, each sorted by name", async (t) => {
+  const { store, home } = await makeStore(t);
+  const cwdA = join(home, "alpha-ws");
+  const cwdB = join(home, "beta-ws");
+
+  store.write({ type: "global", name: "zeta", description: "Z", content: "z" });
+  store.write({ type: "global", name: "alpha", description: "A", content: "a" });
+  store.write({ type: "workspace", cwd: cwdA, name: "beta", description: "B", content: "b" });
+  store.write({ type: "workspace", cwd: cwdA, name: "alpha", description: "A1", content: "a1" });
+  store.write({ type: "workspace", cwd: cwdB, name: "delta", description: "D", content: "d" });
+
+  const all = store.listAll();
+
+  // Global records first, then workspace directories in slug order, each
+  // directory's records sorted by name.
+  assert.deepEqual(
+    all.map((record) => `${record.memoryType}:${record.name}`),
+    ["global:alpha", "global:zeta", "workspace:alpha", "workspace:beta", "workspace:delta"],
+  );
+  assert.equal(all[0].memoryType, "global");
+  assert.equal(all[all.length - 1].memoryType, "workspace");
+  // Records carry their full identity.
+  const wsAlpha = all.find((record) => record.name === "alpha" && record.memoryType === "workspace");
+  assert.equal(wsAlpha.cwd, cwdA);
+  assert.equal(wsAlpha.pairId, `memory:workspace:${workspaceSlug(cwdA)}:alpha`);
+  const global = all.find((record) => record.memoryType === "global");
+  assert.equal(global.cwd, "");
+});
+
+test("memories: listAll excludes MEMORY.md, .forgotten, non-.md, and corrupt files", async (t) => {
+  const { store, home } = await makeStore(t);
+  const globalDir = join(home, "memories", "global");
+  store.write({ type: "global", name: "alpha", description: "A", content: "a" });
+  store.write({ type: "global", name: "beta", description: "B", content: "b" });
+
+  // beta is forgotten (renamed to .forgotten).
+  await rename(join(globalDir, "beta.md"), join(globalDir, "beta.forgotten"));
+  // A non-.md file and a corrupt .md with invalid front matter.
+  await writeFile(join(globalDir, "notes.txt"), "plain text");
+  await writeFile(
+    join(globalDir, "broken.md"),
+    "---\nname: \"broken\"\ndescription: \"x\"\ntype: \"global\"\ncreatedAt: not-a-number\n---\nbody",
+  );
+
+  const warns = [];
+  const scanning = createMemoryStore({
+    home,
+    configStore: configStore(),
+    logger: { warn: (message) => warns.push(String(message)) },
+  });
+  // Skip warnings never throw: both reads must succeed.
+  const all = scanning.listAll();
+  assert.deepEqual(all.map((record) => record.name), ["alpha"], "only the active memory survives");
+  assert.ok(!all.some((record) => record.name === "beta"), "the forgotten file must be excluded");
+  assert.ok(warns.some((message) => message.includes("broken.md")), "the corrupt file must be skipped with a warning");
+  assert.equal(scanning.listAll().length, 1, "repeated reads behave identically");
+});
+
+test("memories: listAll is read-only and never rewrites MEMORY.md", async (t) => {
+  const { store, home } = await makeStore(t);
+  store.write({ type: "global", name: "alpha", description: "A", content: "a" });
+  const wsCwd = join(home, "ws");
+  store.write({ type: "workspace", cwd: wsCwd, name: "beta", description: "B", content: "b" });
+
+  const indexFiles = [
+    join(home, "memories", "global", "MEMORY.md"),
+    join(home, "memories", "workspaces", workspaceSlug(wsCwd), "MEMORY.md"),
+  ];
+  const before = await Promise.all(
+    indexFiles.map(async (file) => ({
+      file,
+      content: await readFile(file, "utf8"),
+      mtime: (await stat(file)).mtimeMs,
+    })),
+  );
+
+  assert.equal(store.listAll().length, 2);
+
+  for (const entry of before) {
+    const after = {
+      content: await readFile(entry.file, "utf8"),
+      mtime: (await stat(entry.file)).mtimeMs,
+    };
+    assert.equal(after.content, entry.content, `${entry.file} content must be unchanged`);
+    assert.equal(after.mtime, entry.mtime, `${entry.file} mtime must be unchanged`);
+  }
 });

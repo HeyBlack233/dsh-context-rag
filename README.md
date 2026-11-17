@@ -50,11 +50,22 @@ Trajectory so you can see exactly what was retrieved and used.
   `<name>.forgotten`, keeping its history while removing it from the index and
   SQLite.
 - **Configure panel** on the plugin's page in the DSH Web GUI (above the
-  **Components** section), split into **Dashboard** (status and index
-  maintenance), **Configuration** (settings, advanced JSON, and save/test
-  actions), and **Logs** (in-memory log window with buffer-size and debug
-  controls, and manual export) tabs, with **English and Simplified Chinese**
-  UI.
+  **Components** section), with four tabs — **Dashboard** (status and index
+  maintenance), **Browse** (inspect stored memories and pairs, check index
+  consistency, re-index a single entry, forget a memory), **Configuration**
+  (settings, advanced JSON, and save/test actions), and **Logs** (in-memory
+  log window with buffer-size and debug controls, and manual export) — with
+  **English and Simplified Chinese** UI.
+- **Browse tab + index consistency check**: browse stored memories and message
+  pairs per scope (all / global / workspaces) in a split list/detail view,
+  each entry carrying a status pill (`consistent`, `missing`, `stale-text`,
+  `pending`, `model-mismatch`, `corrupt`, `orphan`, `unknown`). The
+  **Check index** action audits the current scope on demand — status counts,
+  mismatched entries, orphans, and malformed JSONL lines — and any
+  non-consistent entry can be **re-indexed** individually or forgotten with a
+  two-click confirm (see
+  [Index consistency states](docs/storage-and-data-model.md#index-consistency-states)
+  and [Operations](docs/operations.md#index-consistency-check-and-repair)).
 
 ## Install
 
